@@ -1,0 +1,849 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>First Resources - Real-time GPS Tracking</title>
+    
+    <!-- Meta Tags -->
+    <meta name="description" content="Sistem Monitoring Real-time 23 Unit Canter PS125 - Kebun Tempuling">
+    <meta name="keywords" content="gps tracking, first resources, kebun tempuling, canter ps125, real-time">
+    <link rel="icon" type="image/x-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🚛</text></svg>">
+    
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    
+    <!-- Bootstrap CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    
+    <!-- Firebase SDK -->
+    <script src="https://www.gstatic.com/firebasejs/9.6.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.6.0/firebase-database-compat.js"></script>
+    
+    <!-- External CSS -->
+    <link href="style-monitor.css" rel="stylesheet">
+    
+    <!-- Enhanced Chat CSS -->
+    <style>
+        /* CHAT WINDOW POSITION FIX */
+        #monitorChatContainer {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            z-index: 1000;
+        }
+        
+        .chat-toggle-btn {
+            position: fixed !important;
+            bottom: 20px;
+            left: 20px;
+            z-index: 1002;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+            border-radius: 25px;
+            padding: 10px 20px;
+            transition: all 0.3s ease;
+        }
+        
+        .chat-toggle-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 16px rgba(0,0,0,0.4);
+        }
+        
+        .chat-window {
+            position: fixed;
+            bottom: 70px;
+            left: 20px;
+            width: 380px;
+            max-width: 90vw;
+            height: 500px;
+            max-height: 70vh;
+            background: white;
+            border: 1px solid #ddd;
+            border-radius: 12px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.2);
+            z-index: 1001;
+            display: none;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        
+        .chat-header {
+            background: linear-gradient(135deg, #198754, #20c997);
+            color: white;
+            padding: 12px 15px;
+            border-bottom: 1px solid #ddd;
+        }
+        
+        .chat-header h6 {
+            font-weight: 600;
+        }
+        
+        .chat-messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 15px;
+            background: #f8f9fa;
+        }
+        
+        .chat-input-container {
+            padding: 15px;
+            border-top: 1px solid #eee;
+            background: white;
+        }
+
+        /* Chat Message Styles */
+        .chat-message {
+            margin-bottom: 10px;
+            padding: 8px 12px;
+            border-radius: 12px;
+            max-width: 80%;
+            word-wrap: break-word;
+        }
+        
+        .message-sent {
+            background: #007bff;
+            color: white;
+            margin-left: auto;
+            border-bottom-right-radius: 4px;
+        }
+        
+        .message-received {
+            background: #e9ecef;
+            color: #333;
+            margin-right: auto;
+            border-bottom-left-radius: 4px;
+        }
+        
+        .message-time {
+            font-size: 11px;
+            opacity: 0.7;
+            margin-top: 4px;
+        }
+
+        .message-sender {
+            font-size: 12px;
+            font-weight: bold;
+            margin-bottom: 4px;
+        }
+
+        .message-status {
+            font-size: 10px;
+            margin-left: 5px;
+        }
+
+        .message-footer {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-top: 4px;
+        }
+
+        .chat-date-separator {
+            text-align: center;
+            margin: 10px 0;
+            position: relative;
+        }
+
+        .chat-date-separator span {
+            background: #f8f9fa;
+            padding: 0 10px;
+            color: #6c757d;
+            font-size: 12px;
+        }
+
+        .chat-date-separator:before {
+            content: "";
+            position: absolute;
+            top: 50%;
+            left: 0;
+            right: 0;
+            height: 1px;
+            background: #dee2e6;
+            z-index: -1;
+        }
+
+        .typing-indicator {
+            display: flex;
+            align-items: center;
+            color: #6c757d;
+            font-size: 12px;
+            padding: 5px 10px;
+        }
+
+        .typing-dots {
+            display: flex;
+            margin-left: 8px;
+        }
+
+        .typing-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background-color: #6c757d;
+            margin: 0 1px;
+            animation: typingAnimation 1.4s infinite ease-in-out;
+        }
+
+        .typing-dot:nth-child(1) { animation-delay: -0.32s; }
+        .typing-dot:nth-child(2) { animation-delay: -0.16s; }
+
+        @keyframes typingAnimation {
+            0%, 80%, 100% { transform: scale(0.8); opacity: 0.5; }
+            40% { transform: scale(1); opacity: 1; }
+        }
+
+        /* Chat Animations */
+        @keyframes slideInUp {
+            from {
+                opacity: 0;
+                transform: translateY(20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        @keyframes slideOutDown {
+            from {
+                opacity: 1;
+                transform: translateY(0);
+            }
+            to {
+                opacity: 0;
+                transform: translateY(20px);
+            }
+        }
+
+        @keyframes slideInRight {
+            from {
+                opacity: 0;
+                transform: translateX(100%);
+            }
+            to {
+                opacity: 1;
+                transform: translateX(0);
+            }
+        }
+        
+        .chat-placeholder {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            color: #6c757d;
+        }
+
+        /* Responsive Design for Mobile */
+        @media (max-width: 768px) {
+            .chat-toggle-btn {
+                left: 10px !important;
+                right: auto !important;
+                bottom: 15px;
+                padding: 8px 16px;
+                font-size: 14px;
+            }
+            
+            .chat-window {
+                left: 10px !important;
+                right: 10px !important;
+                bottom: 60px;
+                width: auto;
+                max-width: none;
+                height: 60vh;
+            }
+        }
+        
+        /* Untuk layar sangat kecil */
+        @media (max-width: 480px) {
+            .chat-window {
+                left: 5px !important;
+                right: 5px !important;
+                bottom: 55px;
+                height: 55vh;
+            }
+            
+            .chat-toggle-btn {
+                left: 5px !important;
+                bottom: 10px;
+                font-size: 13px;
+                padding: 6px 12px;
+            }
+        }
+        
+        /* Pastikan tidak overlap dengan sidebar */
+        @media (min-width: 769px) {
+            .sidebar-open .chat-window {
+                left: calc(25% + 20px) !important;
+            }
+        }
+
+        /* Loading and System Styles */
+        #loadingSpinner {
+            z-index: 9999;
+        }
+
+        .debug-panel {
+            z-index: 9998;
+        }
+
+        .chat-notification {
+            z-index: 9997;
+        }
+
+        /* Connection Status Styles */
+        .connection-online {
+            color: #198754 !important;
+            font-weight: bold;
+        }
+
+        .connection-offline {
+            color: #dc3545 !important;
+            font-weight: bold;
+        }
+
+        .real-time-indicator {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background-color: #28a745;
+            margin-right: 5px;
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0% { transform: scale(0.95); opacity: 0.7; }
+            50% { transform: scale(1.1); opacity: 1; }
+            100% { transform: scale(0.95); opacity: 0.7; }
+        }
+    </style>
+</head>
+<body>
+    <!-- Navigation Bar -->
+    <nav class="navbar navbar-expand-lg navbar-dark bg-success">
+        <div class="container">
+            <a class="navbar-brand" href="#">
+                <div class="logo-container">
+                    <div class="logo-fr">
+                        <div class="logo-text">FIRST<br>RESOURCES</div>
+                    </div>
+                </div>
+                <div class="brand-text">
+                    <strong>GPS TRACKING SYSTEM</strong> 
+                    <small class="d-block">Kebun Tempuling - Real-time Monitoring</small>
+                </div>
+            </a>
+            <div class="navbar-text">
+                <span class="text-warning fw-bold me-3">
+                    🏭 PT. SAGM - <span class="real-time-indicator"></span> LIVE
+                </span>
+                <span id="firebaseStatus" class="connection-status connection-online">
+                    🔵 FIREBASE TERHUBUNG
+                </span>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container-fluid">
+        <div class="row">
+            <!-- Sidebar - Unit List -->
+            <div class="col-md-3 bg-light sidebar">
+                <div class="p-3">
+                    <!-- System Status Bar -->
+                    <div class="system-status-bar">
+                        <div class="status-item">
+                            <i>🕒</i> <span id="currentTime">--:--:--</span>
+                        </div>
+                        <div class="status-item">
+                            <i>📡</i> <span id="dataCount">0</span> Data Points
+                        </div>
+                    </div>
+
+                    <h4 class="text-success mb-3">
+                        <i>📊</i> Daftar Unit Canter
+                        <small class="d-block text-muted fs-6">Real-time dari Driver Mobile</small>
+                    </h4>
+                    
+                    <div class="mb-3">
+                        <input type="text" id="searchUnit" class="form-control" placeholder="🔍 Cari unit/driver...">
+                    </div>
+                    
+                    <div class="row g-2 mb-3">
+                        <div class="col-6">
+                            <select id="filterAfdeling" class="form-select">
+                                <option value="">🏢 Semua Afdeling</option>
+                                <option value="AFD I">AFD I</option>
+                                <option value="AFD II">AFD II</option>
+                                <option value="AFD III">AFD III</option>
+                                <option value="AFD IV">AFD IV</option>
+                                <option value="AFD V">AFD V</option>
+                                <option value="KKPA">KKPA</option>
+                            </select>
+                        </div>
+                        <div class="col-6">
+                            <select id="filterStatus" class="form-select">
+                                <option value="">🔄 Semua Status</option>
+                                <option value="active">🟢 Aktif</option>
+                                <option value="moving">🟡 Dalam Perjalanan</option>
+                                <option value="inactive">🔴 Non-Aktif</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="mb-3">
+                        <select id="filterFuel" class="form-select">
+                            <option value="">⛽ Semua Level Bahan Bakar</option>
+                            <option value="high">🟢 Tinggi (&gt;70%)</option>
+                            <option value="medium">🟡 Sedang (30-70%)</option>
+                            <option value="low">🔴 Rendah (&lt;30%)</option>
+                        </select>
+                    </div>
+
+                    <div id="unitList" class="unit-list">
+                        <div class="text-center text-muted py-4">
+                            <div class="spinner-border spinner-border-sm text-success me-2"></div>
+                            Memuat data real-time...
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Main Content - Map -->
+            <div class="col-md-9">
+                <!-- Statistics Cards -->
+                <div class="row mt-3">
+                    <div class="col-xl-3 col-md-6">
+                        <div class="card text-white bg-primary mb-3 stat-card">
+                            <div class="card-body">
+                                <h5 class="card-title">
+                                    <i>🟢</i> Unit Aktif
+                                    <small class="d-block opacity-75">Real-time</small>
+                                </h5>
+                                <h2 id="activeUnits" class="card-text">0/23</h2>
+                                <small class="opacity-75" id="activeUnitsDetail">Loading...</small>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-xl-3 col-md-6">
+                        <div class="card text-white bg-success mb-3 stat-card">
+                            <div class="card-body">
+                                <h5 class="card-title">
+                                    <i>📏</i> Total Jarak Hari Ini
+                                    <small class="d-block opacity-75">Akumulasi Real-time</small>
+                                </h5>
+                                <h2 id="totalDistance" class="card-text">0 km</h2>
+                                <small class="opacity-75" id="distanceDetail">Loading...</small>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-xl-3 col-md-6">
+                        <div class="card text-white bg-warning mb-3 stat-card">
+                            <div class="card-body">
+                                <h5 class="card-title">
+                                    <i>⚡</i> Rata-rata Kecepatan
+                                    <small class="d-block opacity-75">Live Update</small>
+                                </h5>
+                                <h2 id="avgSpeed" class="card-text">0 km/h</h2>
+                                <small class="opacity-75" id="speedDetail">Loading...</small>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-xl-3 col-md-6">
+                        <div class="card text-white bg-danger mb-3 stat-card">
+                            <div class="card-body">
+                                <h5 class="card-title">
+                                    <i>⛽</i> Total Bahan Bakar
+                                    <small class="d-block opacity-75">Berdasar Jarak</small>
+                                </h5>
+                                <h2 id="totalFuel" class="card-text">0 L</h2>
+                                <small class="opacity-75" id="fuelDetail">Loading...</small>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Map Container -->
+                <div class="card">
+                    <div class="card-header bg-light d-flex justify-content-between align-items-center">
+                        <h5 class="card-title mb-0 text-success">
+                            <i>🗺️</i> Peta Live Tracking - Kebun Tempuling
+                            <small class="d-block text-muted fs-6">Update Real-time dari Mobile App</small>
+                        </h5>
+                        <div class="btn-group" role="group">
+                            <button class="btn btn-sm btn-outline-primary" onclick="refreshData()" id="refreshBtn">
+                                <span id="refreshIcon">🔄</span> Refresh
+                            </button>
+                            <button class="btn btn-sm btn-outline-secondary" onclick="exportData()">
+                                <i>📊</i> Export Laporan
+                            </button>
+                            <button class="btn btn-sm btn-outline-success d-md-none" onclick="toggleSidebar()">
+                                <i>📋</i> Daftar Unit
+                            </button>
+                            <button class="btn btn-sm btn-outline-danger" onclick="forceCleanup()" title="Force Cleanup Data Lengket">
+                                <i>🧹</i> Force Cleanup
+                            </button>
+                        </div>
+                    </div>
+                    <div class="card-body p-0 position-relative">
+                        <div id="map"></div>
+                        <!-- Map Overlay Info -->
+                        <div class="position-absolute top-0 end-0 m-3">
+                            <div class="bg-light rounded p-2 shadow-sm">
+                                <small class="text-muted">
+                                    <i>🎯</i> <span id="gpsAccuracyInfo">Menunggu data GPS...</span>
+                                </small>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Legenda -->
+                <div class="card mt-3">
+                    <div class="card-header bg-light">
+                        <h5 class="card-title mb-0 text-success">
+                            <i>🎨</i> Legenda Sistem Real-time
+                        </h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="row">
+                            <div class="col-md-3">
+                                <h6 class="legend-title">Status Unit</h6>
+                                <div class="d-flex align-items-center mb-2">
+                                    <div class="legend-color bg-success me-2"></div>
+                                    <small>🟢 Unit Aktif</small>
+                                </div>
+                                <div class="d-flex align-items-center mb-2">
+                                    <div class="legend-color bg-warning me-2"></div>
+                                    <small>🟡 Dalam Perjalanan</small>
+                                </div>
+                                <div class="d-flex align-items-center mb-2">
+                                    <div class="legend-color bg-danger me-2"></div>
+                                    <small>🔴 Non-Aktif</small>
+                                </div>
+                            </div>
+                            <div class="col-md-3">
+                                <h6 class="legend-title">Lokasi Penting</h6>
+                                <div class="d-flex align-items-center mb-2">
+                                    <div class="legend-color me-2" style="background-color: #6f42c1"></div>
+                                    <small>🏭 PKS SAGM</small>
+                                </div>
+                                <div class="d-flex align-items-center mb-2">
+                                    <div class="legend-color me-2" style="background-color: #e83e8c"></div>
+                                    <small>🏢 Kantor Kebun</small>
+                                </div>
+                            </div>
+                            <div class="col-md-3">
+                                <h6 class="legend-title">Level Bahan Bakar</h6>
+                                <div class="d-flex align-items-center mb-2">
+                                    <div class="legend-color bg-success me-2"></div>
+                                    <small>🟢 Tinggi (&gt;70%)</small>
+                                </div>
+                                <div class="d-flex align-items-center mb-2">
+                                    <div class="legend-color bg-warning me-2"></div>
+                                    <small>🟡 Sedang (30-70%)</small>
+                                </div>
+                                <div class="d-flex align-items-center mb-2">
+                                    <div class="legend-color bg-danger me-2"></div>
+                                    <small>🔴 Rendah (&lt;30%)</small>
+                                </div>
+                            </div>
+                            <div class="col-md-3">
+                                <h6 class="legend-title">Info Baru</h6>
+                                <div class="d-flex align-items-center mb-2">
+                                    <span class="battery-indicator me-2">
+                                        <div class="battery-level battery-high" style="width: 80%"></div>
+                                    </span>
+                                    <small>🔋 Level Baterai</small>
+                                </div>
+                                <div class="d-flex align-items-center mb-2">
+                                    <span class="accuracy-badge me-2">±5m</span>
+                                    <small>🎯 Akurasi GPS</small>
+                                </div>
+                                <div class="d-flex align-items-center mb-2">
+                                    <span class="real-time-indicator me-2"></span>
+                                    <small>⚡ Data Real-time</small>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Data Logger Section -->
+                <div class="card mt-3">
+                    <div class="card-header bg-light">
+                        <h5 class="card-title mb-0 text-success">
+                            <i>📊</i> Data Logger System - Real-time Activity Log
+                        </h5>
+                    </div>
+                    <div class="card-body p-0">
+                        <div id="dataLoggerContainer">
+                            <div class="text-center text-muted py-4">
+                                <div class="spinner-border spinner-border-sm text-success me-2"></div>
+                                Memuat data logger...
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ✅ ENHANCED CHAT INTERFACE - POSITION FIXED & RESPONSIVE -->
+    <div id="monitorChatContainer">
+        <!-- Chat Toggle Button -->
+        <button id="monitorChatToggle" class="btn btn-primary chat-toggle-btn">
+            💬 Chat dengan Driver <span id="monitorUnreadBadge" class="badge bg-danger" style="display: none;"></span>
+        </button>
+        
+        <!-- Chat Window - FIXED POSITION & RESPONSIVE -->
+        <div id="monitorChatWindow" class="chat-window">
+            <div class="chat-header">
+                <h6 class="mb-0">💬 Chat dengan Driver</h6>
+                <div class="input-group input-group-sm">
+                    <select id="monitorChatUnitSelect" class="form-select form-select-sm">
+                        <option value="">Pilih Unit...</option>
+                    </select>
+                    <button type="button" class="btn-close btn-close-white" onclick="toggleMonitorChat()"></button>
+                </div>
+            </div>
+            
+            <div id="monitorChatMessages" class="chat-messages">
+                <div class="chat-placeholder text-center text-muted py-4">
+                    <small>Pilih unit untuk memulai percakapan...</small>
+                </div>
+            </div>
+            
+            <div class="chat-input-container">
+                <div class="input-group">
+                    <input type="text" id="monitorChatInput" class="form-control" 
+                           placeholder="Ketik pesan..." disabled
+                           onkeypress="handleMonitorChatInput(event)">
+                    <button class="btn btn-primary" type="button" 
+                            onclick="sendMonitorMessage()" disabled id="monitorSendBtn">
+                        Kirim
+                    </button>
+                </div>
+                <small class="text-muted d-block mt-1">Tekan Enter untuk mengirim</small>
+            </div>
+        </div>
+    </div>
+
+    <!-- Loading Spinner -->
+    <div id="loadingSpinner" class="d-none position-fixed top-50 start-50 translate-middle">
+        <div class="text-center bg-light rounded p-4 shadow">
+            <div class="spinner-border text-success mb-3" role="status" style="width: 3rem; height: 3rem;">
+                <span class="visually-hidden">Loading...</span>
+            </div>
+            <p class="mb-0 text-success">Menyambungkan ke Firebase...</p>
+        </div>
+    </div>
+
+    <!-- Notification Container -->
+    <div id="notificationContainer" class="position-fixed top-0 end-0 p-3" style="z-index: 9999;"></div>
+
+    <!-- JavaScript Libraries -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    
+    <!-- External JavaScript -->
+    <script src="script-monitor.js"></script>
+    
+    <!-- ✅ ENHANCED GLOBAL FUNCTIONS - IMPROVED CHAT INTERFACE -->
+    <script>
+        // ✅ ENHANCED CHAT TOGGLE FUNCTION - Delegated to gpsSystem
+        function toggleMonitorChat() {
+            if (window.gpsSystem) {
+                window.gpsSystem.toggleMonitorChat();
+            } else {
+                console.warn('GPS System belum diinisialisasi');
+                // Fallback manual toggle
+                const chatWindow = document.getElementById('monitorChatWindow');
+                if (chatWindow) {
+                    const isVisible = chatWindow.style.display === 'flex';
+                    chatWindow.style.display = isVisible ? 'none' : 'flex';
+                    if (!isVisible) {
+                        chatWindow.style.animation = 'slideInUp 0.3s ease-out forwards';
+                    }
+                }
+            }
+        }
+
+        // ✅ ENHANCED CHAT INPUT HANDLER - Delegated to gpsSystem
+        function handleMonitorChatInput(event) {
+            if (window.gpsSystem) {
+                window.gpsSystem.handleMonitorChatInput(event);
+            } else if (event.key === 'Enter') {
+                sendMonitorMessage();
+            }
+        }
+
+        // ✅ ENHANCED SEND MESSAGE FUNCTION - Delegated to gpsSystem
+        function sendMonitorMessage() {
+            if (window.gpsSystem) {
+                window.gpsSystem.sendMonitorMessage();
+            } else {
+                console.warn('GPS System belum diinisialisasi - tidak dapat mengirim pesan');
+            }
+        }
+
+        // ✅ ENHANCED UNIT SELECTION FUNCTION
+        function selectChatUnit(unitName) {
+            if (window.gpsSystem) {
+                window.gpsSystem.selectChatUnit(unitName);
+                
+                // Enable input when unit is selected
+                const input = document.getElementById('monitorChatInput');
+                const sendBtn = document.getElementById('monitorSendBtn');
+                if (input && sendBtn) {
+                    input.disabled = false;
+                    sendBtn.disabled = false;
+                    input.focus();
+                }
+            } else {
+                console.warn('GPS System belum diinisialisasi - tidak dapat memilih unit');
+            }
+        }
+
+        // ✅ ENHANCED REAL-TIME CLOCK
+        function updateClock() {
+            const now = new Date();
+            const timeElement = document.getElementById('currentTime');
+            if (timeElement) {
+                timeElement.textContent = now.toLocaleTimeString('id-ID');
+            }
+        }
+        setInterval(updateClock, 1000);
+        updateClock();
+
+        // ✅ ENHANCED FORCE CLEANUP FUNCTION
+        function forceCleanup() {
+            if (window.gpsSystem) {
+                window.gpsSystem.forceCleanupAllData();
+                alert('Force cleanup executed! All sticky data removed.');
+            } else {
+                console.warn('GPS System belum diinisialisasi - tidak dapat melakukan cleanup');
+                alert('Sistem belum siap. Tunggu beberapa saat dan coba lagi.');
+            }
+        }
+
+        // ✅ ENHANCED REFRESH FUNCTION
+        function refreshData() {
+            if (window.gpsSystem) {
+                window.gpsSystem.refreshData();
+            } else {
+                console.warn('GPS System belum diinisialisasi - tidak dapat refresh data');
+                location.reload(); // Fallback reload
+            }
+        }
+
+        // ✅ ENHANCED EXPORT FUNCTION
+        function exportData() {
+            if (window.gpsSystem) {
+                window.gpsSystem.downloadRouteData();
+            } else {
+                console.warn('GPS System belum diinisialisasi - tidak dapat export data');
+                alert('Sistem belum siap untuk export data.');
+            }
+        }
+
+        // ✅ ENHANCED SIDEBAR TOGGLE FUNCTION
+        function toggleSidebar() {
+            const sidebar = document.querySelector('.sidebar');
+            const body = document.body;
+            
+            if (sidebar) {
+                sidebar.classList.toggle('show');
+                body.classList.toggle('sidebar-open');
+            }
+        }
+
+        // ✅ ENHANCED CLICK OUTSIDE HANDLER FOR CHAT
+        document.addEventListener('click', function(event) {
+            const chatContainer = document.getElementById('monitorChatContainer');
+            const chatWindow = document.getElementById('monitorChatWindow');
+            const toggleBtn = document.getElementById('monitorChatToggle');
+            
+            if (chatWindow && chatWindow.style.display === 'flex' && 
+                !chatContainer.contains(event.target) && 
+                event.target !== toggleBtn) {
+                toggleMonitorChat();
+            }
+        });
+
+        // ✅ ENHANCED ERROR HANDLING FOR MISSING GPS SYSTEM
+        document.addEventListener('DOMContentLoaded', function() {
+            console.log('🚀 DOM Content Loaded - Initializing GPS Tracking System');
+            
+            // Initialize clock immediately
+            updateClock();
+            
+            // Check if gpsSystem is available after a short delay
+            const checkSystemReady = setInterval(() => {
+                if (window.gpsSystem) {
+                    console.log('✅ GPS System successfully initialized');
+                    clearInterval(checkSystemReady);
+                    
+                    // Update connection status
+                    if (window.gpsSystem.updateConnectionStatus) {
+                        // Simulate connected status
+                        window.gpsSystem.updateConnectionStatus(true);
+                    }
+                }
+            }, 500);
+
+            // Timeout after 10 seconds
+            setTimeout(() => {
+                if (!window.gpsSystem) {
+                    console.error('❌ GPS System failed to initialize within timeout period');
+                    clearInterval(checkSystemReady);
+                    
+                    // Show error state for chat
+                    const chatInput = document.getElementById('monitorChatInput');
+                    const sendBtn = document.getElementById('monitorSendBtn');
+                    if (chatInput && sendBtn) {
+                        chatInput.placeholder = 'Sistem gagal dimuat - Refresh halaman';
+                        chatInput.disabled = true;
+                        sendBtn.disabled = true;
+                    }
+                    
+                    // Update Firebase status
+                    const firebaseStatus = document.getElementById('firebaseStatus');
+                    if (firebaseStatus) {
+                        firebaseStatus.innerHTML = '🔴 FIREBASE GAGAL';
+                        firebaseStatus.className = 'connection-status connection-offline';
+                    }
+                }
+            }, 10000);
+        });
+
+        // ✅ ENHANCED SYSTEM READY CHECK
+        window.addEventListener('load', function() {
+            console.log('📦 Page fully loaded');
+            
+            // Hide loading spinner after system is ready
+            setTimeout(() => {
+                const loadingSpinner = document.getElementById('loadingSpinner');
+                if (loadingSpinner) {
+                    loadingSpinner.classList.add('d-none');
+                }
+            }, 2000);
+        });
+
+        // ✅ GLOBAL ERROR HANDLER
+        window.addEventListener('error', function(event) {
+            console.error('Global error caught:', event.error);
+            
+            const notification = document.createElement('div');
+            notification.className = 'alert alert-danger alert-dismissible fade show';
+            notification.style.cssText = 'position: fixed; top: 20px; right: 20px; z-index: 9999; min-width: 300px;';
+            notification.innerHTML = `
+                <strong>Error:</strong> ${event.error?.message || 'Terjadi kesalahan sistem'}
+                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+            `;
+            
+            document.body.appendChild(notification);
+        });
+    </script>
+</body>
+</html>
