@@ -124,6 +124,980 @@ class GPSKalmanFilter {
     }
 }
 
+// ===== MOVEMENT DETECTOR =====
+class MovementDetector {
+    constructor() {
+        this.positionHistory = [];
+        this.movementThreshold = 2.0; // meters
+        this.stationaryThreshold = 5; // consecutive readings
+        this.stationaryCount = 0;
+        this.isMoving = false;
+    }
+
+    updatePosition(position) {
+        this.positionHistory.push({
+            lat: position.lat,
+            lng: position.lng,
+            timestamp: position.timestamp || new Date()
+        });
+
+        // Keep only recent positions
+        if (this.positionHistory.length > 10) {
+            this.positionHistory.shift();
+        }
+
+        return this.analyzeMovement();
+    }
+
+    analyzeMovement() {
+        if (this.positionHistory.length < 2) {
+            return { isMoving: false, confidence: 0 };
+        }
+
+        const recentPositions = this.positionHistory.slice(-5);
+        let totalDistance = 0;
+        let movementCount = 0;
+
+        for (let i = 1; i < recentPositions.length; i++) {
+            const distance = this.calculateDistance(
+                recentPositions[i-1].lat, recentPositions[i-1].lng,
+                recentPositions[i].lat, recentPositions[i].lng
+            );
+            totalDistance += distance;
+
+            if (distance > this.movementThreshold) {
+                movementCount++;
+            }
+        }
+
+        const avgDistance = totalDistance / (recentPositions.length - 1);
+        const movementRatio = movementCount / (recentPositions.length - 1);
+
+        // Update stationary count
+        if (movementRatio > 0.3) {
+            this.stationaryCount = 0;
+            this.isMoving = true;
+        } else {
+            this.stationaryCount++;
+            if (this.stationaryCount >= this.stationaryThreshold) {
+                this.isMoving = false;
+            }
+        }
+
+        return {
+            isMoving: this.isMoving,
+            confidence: movementRatio,
+            averageDistance: avgDistance,
+            stationaryTime: this.stationaryCount
+        };
+    }
+
+    calculateDistance(lat1, lon1, lat2, lon2) {
+        const R = 6371000; // Earth radius in meters
+        const dLat = (lat2 - lat1) * Math.PI / 180;
+        const dLon = (lon2 - lon1) * Math.PI / 180;
+        const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                  Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * 
+                  Math.sin(dLon/2) * Math.sin(dLon/2);
+        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+        return R * c;
+    }
+
+    reset() {
+        this.positionHistory = [];
+        this.stationaryCount = 0;
+        this.isMoving = false;
+    }
+}
+
+// ===== REAL TIME DISTANCE CALCULATOR =====
+class RealTimeDistanceCalculator {
+    constructor() {
+        this.positionHistory = [];
+        this.totalDistance = 0;
+        this.currentSpeed = 0;
+        this.speedHistory = [];
+        this.maxHistorySize = 10;
+    }
+
+    updatePosition(newPosition) {
+        if (!newPosition || !newPosition.lat || !newPosition.lng) {
+            return { distance: 0, speed: 0, totalDistance: this.totalDistance };
+        }
+
+        const now = Date.now();
+        this.positionHistory.push({
+            ...newPosition,
+            timestamp: now
+        });
+
+        // Keep history manageable
+        if (this.positionHistory.length > this.maxHistorySize) {
+            this.positionHistory.shift();
+        }
+
+        // Calculate distance and speed
+        if (this.positionHistory.length >= 2) {
+            const latest = this.positionHistory[this.positionHistory.length - 1];
+            const previous = this.positionHistory[this.positionHistory.length - 2];
+            
+            const distance = this.calculateDistance(
+                previous.lat, previous.lng,
+                latest.lat, latest.lng
+            );
+
+            const timeDiff = (latest.timestamp - previous.timestamp) / 1000; // seconds
+            const speed = timeDiff > 0 ? (distance / timeDiff) * 3.6 : 0; // km/h
+
+            this.totalDistance += distance;
+            this.currentSpeed = speed;
+
+            // Update speed history
+            this.speedHistory.push(speed);
+            if (this.speedHistory.length > 5) {
+                this.speedHistory.shift();
+            }
+        }
+
+        return {
+            distance: this.currentDistance,
+            speed: this.currentSpeed,
+            totalDistance: this.totalDistance,
+            averageSpeed: this.calculateAverageSpeed()
+        };
+    }
+
+    calculateDistance(lat1, lon1, lat2, lon2) {
+        const R = 6371000; // Earth radius in meters
+        const dLat = (lat2 - lat1) * Math.PI / 180;
+        const dLon = (lon2 - lon1) * Math.PI / 180;
+        const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                  Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * 
+                  Math.sin(dLon/2) * Math.sin(dLon/2);
+        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+        return R * c;
+    }
+
+    calculateAverageSpeed() {
+        if (this.speedHistory.length === 0) return 0;
+        return this.speedHistory.reduce((a, b) => a + b, 0) / this.speedHistory.length;
+    }
+
+    reset() {
+        this.positionHistory = [];
+        this.totalDistance = 0;
+        this.currentSpeed = 0;
+        this.speedHistory = [];
+    }
+
+    getMetrics() {
+        return {
+            totalDistance: this.totalDistance,
+            currentSpeed: this.currentSpeed,
+            averageSpeed: this.calculateAverageSpeed(),
+            positionCount: this.positionHistory.length
+        };
+    }
+}
+
+// ===== BACKGROUND AWARE GPS PROCESSOR =====
+class BackgroundAwareGPSProcessor {
+    constructor() {
+        this.backgroundMode = false;
+        this.offlineMode = false;
+        this.positionQueue = [];
+        this.maxQueueSize = 1000;
+        this.distanceCalculator = new RealTimeDistanceCalculator();
+        this.movementDetector = new MovementDetector();
+        this.kalmanFilter = new GPSKalmanFilter();
+        this.lastProcessedPosition = null;
+        
+        this.setupBackgroundDetection();
+    }
+
+    setupBackgroundDetection() {
+        document.addEventListener('visibilitychange', () => {
+            this.backgroundMode = document.hidden;
+            if (this.backgroundMode) {
+                console.log('📱 Entering background mode');
+            } else {
+                console.log('📱 Returning to foreground');
+                this.processQueuedPositions();
+            }
+        });
+
+        window.addEventListener('online', () => {
+            this.offlineMode = false;
+            console.log('🌐 Online mode restored');
+        });
+
+        window.addEventListener('offline', () => {
+            this.offlineMode = true;
+            console.log('🌐 Offline mode activated');
+        });
+    }
+
+    processPosition(position, isBackground = false, isOffline = false) {
+        const processedPosition = this.kalmanFilter.updatePosition(
+            position.coords.latitude,
+            position.coords.longitude,
+            position.coords.speed || 0,
+            position.coords.heading
+        );
+
+        processedPosition.timestamp = new Date();
+        processedPosition.isBackground = isBackground;
+        processedPosition.isOffline = isOffline;
+
+        // Update movement detection
+        const movement = this.movementDetector.updatePosition(processedPosition);
+
+        // Update distance calculation
+        const distanceData = this.distanceCalculator.updatePosition(processedPosition);
+
+        return {
+            ...processedPosition,
+            movement: movement,
+            distance: distanceData,
+            quality: this.assessQuality(processedPosition, movement)
+        };
+    }
+
+    assessQuality(position, movement) {
+        let qualityScore = 1.0;
+
+        // Accuracy impact
+        if (position.accuracy > 50) qualityScore -= 0.3;
+        else if (position.accuracy > 25) qualityScore -= 0.1;
+
+        // Movement confidence impact
+        if (movement.confidence < 0.3) qualityScore -= 0.2;
+
+        // Background mode impact
+        if (position.isBackground) qualityScore -= 0.1;
+
+        // Offline mode impact
+        if (position.isOffline) qualityScore -= 0.1;
+
+        return Math.max(0.1, Math.min(1.0, qualityScore));
+    }
+
+    queuePosition(position) {
+        if (this.positionQueue.length >= this.maxQueueSize) {
+            this.positionQueue.shift(); // Remove oldest if queue full
+        }
+        this.positionQueue.push(position);
+    }
+
+    processQueuedPositions() {
+        if (this.positionQueue.length === 0) return;
+
+        console.log(`🔄 Processing ${this.positionQueue.length} queued positions`);
+        
+        const processed = [];
+        while (this.positionQueue.length > 0) {
+            const position = this.positionQueue.shift();
+            const processedPosition = this.processPosition(position, true, true);
+            processed.push(processedPosition);
+        }
+
+        return processed;
+    }
+
+    reset() {
+        this.positionQueue = [];
+        this.distanceCalculator.reset();
+        this.movementDetector.reset();
+        this.kalmanFilter.reset();
+        this.lastProcessedPosition = null;
+    }
+
+    getStatus() {
+        return {
+            backgroundMode: this.backgroundMode,
+            offlineMode: this.offlineMode,
+            queuedPositions: this.positionQueue.length,
+            distanceMetrics: this.distanceCalculator.getMetrics(),
+            movementStatus: this.movementDetector.analyzeMovement(),
+            filterStatus: this.kalmanFilter.getFilterStatus()
+        };
+    }
+}
+
+// ===== UNLIMITED OPERATION MANAGER =====
+class UnlimitedOperationManager {
+    constructor() {
+        this.operationStartTime = Date.now();
+        this.backgroundStartTime = null;
+        this.offlineStartTime = null;
+        this.positionCount = 0;
+        this.dataPointsProcessed = 0;
+        this.lastCleanupTime = Date.now();
+        
+        // Unlimited configuration
+        this.cleanupInterval = 30 * 60 * 1000; // 30 menit sekali cleanup
+        this.memorySafetyThreshold = 0.8; // 80% memory usage
+        this.maxQueueSize = 1000000; // 1 juta items (very high)
+        this.autoArchiveThreshold = 100000; // Archive setelah 100k points
+        
+        this.performanceMetrics = {
+            totalUptime: 0,
+            backgroundUptime: 0,
+            offlineUptime: 0,
+            positionsProcessed: 0,
+            dataPointsSaved: 0,
+            recoveryCount: 0
+        };
+        
+        this.startUnlimitedOperation();
+    }
+
+    startUnlimitedOperation() {
+        // Start background processing yang tidak pernah berhenti
+        this.startInfiniteBackgroundProcessor();
+        this.startMemoryManagement();
+        this.startAutoRecovery();
+        this.startDataArchiving();
+        
+        console.log('♾️ Unlimited operation manager started');
+    }
+
+    startInfiniteBackgroundProcessor() {
+        // Gunakan recursive setTimeout untuk menghindari interval blockage
+        const processInBackground = () => {
+            if (this.isInBackground()) {
+                this.processBackgroundOperations();
+            }
+            // Schedule next execution dengan jitter untuk menghindari blockage
+            const nextDelay = 1000 + Math.random() * 2000; // 1-3 detik
+            setTimeout(processInBackground, nextDelay);
+        };
+        
+        processInBackground();
+    }
+
+    startMemoryManagement() {
+        const manageMemory = () => {
+            this.performMemoryCleanup();
+            this.checkMemoryUsage();
+            setTimeout(manageMemory, 60000); // Check setiap 1 menit
+        };
+        
+        manageMemory();
+    }
+
+    startAutoRecovery() {
+        const autoRecover = () => {
+            this.checkSystemHealth();
+            this.performAutoRecoveryIfNeeded();
+            setTimeout(autoRecover, 30000); // Check setiap 30 detik
+        };
+        
+        autoRecover();
+    }
+
+    startDataArchiving() {
+        const autoArchive = () => {
+            this.performAutoArchiving();
+            setTimeout(autoArchive, 5 * 60 * 1000); // Archive setiap 5 menit
+        };
+        
+        autoArchive();
+    }
+
+    processBackgroundOperations() {
+        // Process semua background operations tanpa batas
+        this.processPositionQueue();
+        this.processStorageOperations();
+        this.updatePerformanceMetrics();
+    }
+
+    performMemoryCleanup() {
+        const now = Date.now();
+        if (now - this.lastCleanupTime > this.cleanupInterval) {
+            console.log('🧹 Performing memory cleanup...');
+            
+            // Cleanup circular buffers
+            if (window.dtLogger?.waypointBuffer) {
+                const oldSize = window.dtLogger.waypointBuffer.count;
+                // Keep only last 50k points in memory
+                if (oldSize > 50000) {
+                    const recent = window.dtLogger.waypointBuffer.getRecent(50000);
+                    window.dtLogger.waypointBuffer.clear();
+                    recent.forEach(point => window.dtLogger.waypointBuffer.push(point));
+                    console.log(`🧹 Reduced waypoint buffer from ${oldSize} to ${window.dtLogger.waypointBuffer.count}`);
+                }
+            }
+            
+            // Cleanup processing queues
+            if (window.dtLogger?.gpsProcessor?.positionQueue) {
+                const queueSize = window.dtLogger.gpsProcessor.positionQueue.length;
+                if (queueSize > 1000) {
+                    window.dtLogger.gpsProcessor.positionQueue = 
+                        window.dtLogger.gpsProcessor.positionQueue.slice(-1000);
+                    console.log(`🧹 Reduced processing queue from ${queueSize} to 1000`);
+                }
+            }
+            
+            // Force garbage collection jika available
+            if (window.gc) {
+                window.gc();
+            }
+            
+            this.lastCleanupTime = now;
+        }
+    }
+
+    performAutoArchiving() {
+        // Auto-archive data lama ke compressed storage
+        const storageManager = window.dtLogger?.storageManager;
+        if (!storageManager) return;
+
+        try {
+            const waypoints = storageManager.loadAllWaypoints();
+            if (waypoints.length > this.autoArchiveThreshold) {
+                console.log(`🗃️ Auto-archiving ${waypoints.length} waypoints...`);
+                
+                // Archive points yang sudah synced dan berusia > 1 jam
+                const now = new Date();
+                const oneHourAgo = new Date(now.getTime() - (60 * 60 * 1000));
+                
+                const toArchive = waypoints.filter(wp => 
+                    wp.synced && new Date(wp.timestamp) < oneHourAgo
+                );
+                
+                const toKeep = waypoints.filter(wp => 
+                    !wp.synced || new Date(wp.timestamp) >= oneHourAgo
+                );
+                
+                if (toArchive.length > 0) {
+                    storageManager.saveToStorage(toKeep);
+                    
+                    // Add to compressed storage
+                    const compressed = storageManager.loadCompressedData();
+                    compressed.push({
+                        archiveId: `auto_archive_${Date.now()}`,
+                        archivedAt: new Date().toISOString(),
+                        count: toArchive.length,
+                        data: toArchive
+                    });
+                    
+                    localStorage.setItem(
+                        storageManager.STORAGE_KEYS.COMPRESSED_DATA, 
+                        JSON.stringify(compressed)
+                    );
+                    
+                    console.log(`✅ Auto-archived ${toArchive.length} waypoints`);
+                }
+            }
+        } catch (error) {
+            console.error('❌ Auto-archiving failed:', error);
+        }
+    }
+
+    checkMemoryUsage() {
+        // Check memory usage dan lakukan emergency cleanup jika needed
+        if (performance.memory) {
+            const used = performance.memory.usedJSHeapSize;
+            const total = performance.memory.totalJSHeapSize;
+            const usageRatio = used / total;
+            
+            if (usageRatio > this.memorySafetyThreshold) {
+                console.warn('🚨 High memory usage detected, performing emergency cleanup');
+                this.emergencyMemoryCleanup();
+            }
+        }
+    }
+
+    emergencyMemoryCleanup() {
+        // Emergency cleanup untuk hindari crash
+        console.warn('🚨 PERFORMING EMERGENCY MEMORY CLEANUP');
+        
+        // Clear semua large buffers
+        if (window.dtLogger) {
+            // Keep only essential data
+            window.dtLogger.waypointBuffer.clear();
+            window.dtLogger.gpsProcessor.positionQueue = [];
+            window.dtLogger.speedHistory = [];
+            window.dtLogger.distanceHistory = [];
+        }
+        
+        // Clear processing histories
+        if (window.dtLogger?.gpsProcessor) {
+            window.dtLogger.gpsProcessor.distanceCalculator.distanceHistory = [];
+            window.dtLogger.gpsProcessor.distanceCalculator.speedHistory = [];
+        }
+        
+        // Force garbage collection
+        if (window.gc) {
+            window.gc();
+        }
+        
+        console.log('✅ Emergency memory cleanup completed');
+    }
+
+    checkSystemHealth() {
+        const now = Date.now();
+        const uptime = now - this.operationStartTime;
+        
+        this.performanceMetrics.totalUptime = uptime;
+        
+        // Log status setiap 10 menit
+        if (uptime % (10 * 60 * 1000) < 1000) {
+            console.log(`🕒 System uptime: ${this.formatUptime(uptime)}`);
+            this.printSystemStatus();
+        }
+        
+        // Auto-recover jika ada komponen yang stuck
+        this.autoRecoverStuckComponents();
+    }
+
+    autoRecoverStuckComponents() {
+        const logger = window.dtLogger;
+        if (!logger) return;
+        
+        // Check GPS tracking status
+        if (logger.isTracking && logger.healthMetrics.gpsUpdates === 0) {
+            console.warn('🔄 GPS seems stuck, attempting recovery...');
+            this.performanceMetrics.recoveryCount++;
+            
+            logger.stopRealGPSTracking();
+            setTimeout(() => {
+                if (logger.journeyStatus === 'started') {
+                    logger.startRealGPSTracking();
+                }
+            }, 1000);
+        }
+        
+        // Check data transmission
+        if (logger.isOnline && logger.unsyncedWaypoints.size > 1000) {
+            console.warn('🔄 Large unsynced data, forcing sync...');
+            logger.syncWaypointsToServer();
+        }
+    }
+
+    updatePerformanceMetrics() {
+        const now = Date.now();
+        
+        if (this.isInBackground() && !this.backgroundStartTime) {
+            this.backgroundStartTime = now;
+        } else if (!this.isInBackground() && this.backgroundStartTime) {
+            this.performanceMetrics.backgroundUptime += (now - this.backgroundStartTime);
+            this.backgroundStartTime = null;
+        }
+        
+        if (!navigator.onLine && !this.offlineStartTime) {
+            this.offlineStartTime = now;
+        } else if (navigator.onLine && this.offlineStartTime) {
+            this.performanceMetrics.offlineUptime += (now - this.offlineStartTime);
+            this.offlineStartTime = null;
+        }
+    }
+
+    isInBackground() {
+        return document.hidden || !document.hasFocus();
+    }
+
+    formatUptime(ms) {
+        const seconds = Math.floor(ms / 1000);
+        const hours = Math.floor(seconds / 3600);
+        const minutes = Math.floor((seconds % 3600) / 60);
+        const secs = seconds % 60;
+        
+        return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+    }
+
+    printSystemStatus() {
+        const logger = window.dtLogger;
+        if (!logger) return;
+        
+        console.group('📊 UNLIMITED SYSTEM STATUS');
+        console.log('🕒 Total Uptime:', this.formatUptime(this.performanceMetrics.totalUptime));
+        console.log('📱 Background Time:', this.formatUptime(this.performanceMetrics.backgroundUptime));
+        console.log('🌐 Offline Time:', this.formatUptime(this.performanceMetrics.offlineUptime));
+        console.log('📍 Positions Processed:', this.performanceMetrics.positionsProcessed);
+        console.log('💾 Data Points Saved:', this.performanceMetrics.dataPointsSaved);
+        console.log('🔄 Recovery Count:', this.performanceMetrics.recoveryCount);
+        console.log('📡 GPS Updates:', logger.healthMetrics.gpsUpdates);
+        console.log('💾 Waypoint Buffer:', logger.waypointBuffer?.count || 0);
+        console.log('🔄 Unsynced Waypoints:', logger.unsyncedWaypoints?.size || 0);
+        console.log('📶 Online Status:', navigator.onLine);
+        console.log('🎯 Journey Status:', logger.journeyStatus);
+        console.groupEnd();
+    }
+
+    getUnlimitedMetrics() {
+        return {
+            ...this.performanceMetrics,
+            currentUptime: this.formatUptime(Date.now() - this.operationStartTime),
+            systemHealth: this.getSystemHealthStatus(),
+            memoryInfo: this.getMemoryInfo(),
+            storageInfo: this.getStorageInfo()
+        };
+    }
+
+    getSystemHealthStatus() {
+        const logger = window.dtLogger;
+        if (!logger) return 'unknown';
+        
+        if (!logger.isTracking && logger.journeyStatus === 'started') {
+            return 'needs_recovery';
+        }
+        
+        if (logger.unsyncedWaypoints.size > 5000) {
+            return 'sync_backlog';
+        }
+        
+        return 'healthy';
+    }
+
+    getMemoryInfo() {
+        if (!performance.memory) return 'not_available';
+        
+        const used = performance.memory.usedJSHeapSize / 1048576; // MB
+        const total = performance.memory.totalJSHeapSize / 1048576; // MB
+        const limit = performance.memory.jsHeapSizeLimit / 1048576; // MB
+        
+        return {
+            used: used.toFixed(2) + ' MB',
+            total: total.toFixed(2) + ' MB',
+            limit: limit.toFixed(2) + ' MB',
+            usagePercentage: ((used / total) * 100).toFixed(1) + '%'
+        };
+    }
+
+    getStorageInfo() {
+        try {
+            let totalSize = 0;
+            for (let key in localStorage) {
+                if (localStorage.hasOwnProperty(key)) {
+                    totalSize += localStorage[key].length * 2; // UTF-16 bytes
+                }
+            }
+            
+            const totalMB = totalSize / 1048576;
+            
+            return {
+                totalSize: totalMB.toFixed(2) + ' MB',
+                estimatedCapacity: '5-10 MB (typical browser limit)',
+                health: totalMB > 8 ? 'critical' : totalMB > 5 ? 'warning' : 'healthy'
+            };
+        } catch (error) {
+            return { error: 'cannot_calculate' };
+        }
+    }
+}
+
+// ===== ENHANCED UNLIMITED GPS PROCESSOR =====
+class UnlimitedGPSProcessor extends BackgroundAwareGPSProcessor {
+    constructor() {
+        super();
+        this.unlimitedMode = true;
+        this.lastPositionTime = Date.now();
+        this.stuckDetectionThreshold = 30000; // 30 detik
+        this.backgroundProcessingEnabled = true;
+        
+        this.startUnlimitedProcessing();
+    }
+
+    startUnlimitedProcessing() {
+        // Background processing yang never stops
+        this.startBackgroundPositionProcessor();
+        this.startStuckDetection();
+    }
+
+    startBackgroundPositionProcessor() {
+        const processPositions = () => {
+            if (this.backgroundMode || this.offlineMode) {
+                this.processAllQueuedPositions();
+            }
+            
+            // Gunakan recursive timeout untuk infinite loop
+            setTimeout(processPositions, 2000); // Process setiap 2 detik
+        };
+        
+        processPositions();
+    }
+
+    startStuckDetection() {
+        const checkStuck = () => {
+            const now = Date.now();
+            if (now - this.lastPositionTime > this.stuckDetectionThreshold) {
+                console.warn('⚠️ No position updates, checking GPS...');
+                this.recoverFromStuckState();
+            }
+            setTimeout(checkStuck, 10000); // Check setiap 10 detik
+        };
+        
+        checkStuck();
+    }
+
+    processAllQueuedPositions() {
+        let processedCount = 0;
+        const maxProcessPerCycle = 100; // Batasi per cycle untuk hindari blockage
+        
+        while (this.positionQueue.length > 0 && processedCount < maxProcessPerCycle) {
+            const position = this.positionQueue.shift();
+            if (this.processQueuedPosition(position)) {
+                processedCount++;
+            }
+        }
+        
+        if (processedCount > 0) {
+            console.log(`🔄 Processed ${processedCount} queued positions in background`);
+        }
+        
+        return processedCount;
+    }
+
+    processQueuedPosition(position) {
+        try {
+            // Update distance calculator dengan position yang queued
+            if (this.lastProcessedPosition) {
+                const distance = this.calculateDistance(
+                    this.lastProcessedPosition.lat, this.lastProcessedPosition.lng,
+                    position.lat, position.lng
+                );
+                
+                if (distance > 1.0) { // Only update jika ada movement meaningful
+                    this.distanceCalculator.updatePosition(position);
+                    this.lastProcessedPosition = position;
+                    return true;
+                }
+            } else {
+                this.lastProcessedPosition = position;
+                this.distanceCalculator.updatePosition(position);
+                return true;
+            }
+        } catch (error) {
+            console.error('Error processing queued position:', error);
+        }
+        
+        return false;
+    }
+
+    recoverFromStuckState() {
+        console.log('🔄 Recovering from stuck state...');
+        
+        // Reset processors
+        this.distanceCalculator.reset();
+        this.kalmanFilter.reset();
+        
+        // Clear queue yang mungkin corrupt
+        if (this.positionQueue.length > 1000) {
+            this.positionQueue = this.positionQueue.slice(-500); // Keep only recent 500
+        }
+        
+        this.lastPositionTime = Date.now();
+        
+        console.log('✅ Stuck state recovery completed');
+    }
+
+    // Override untuk handle unlimited operation
+    processPosition(position, isBackground = false, isOffline = false) {
+        this.lastPositionTime = Date.now();
+        return super.processPosition(position, isBackground, isOffline);
+    }
+}
+
+// ===== ENHANCED UNLIMITED STORAGE MANAGER =====
+class UnlimitedStorageManager extends EnhancedStorageManager {
+    constructor() {
+        super();
+        this.unlimitedMode = true;
+        this.totalDataPointsStored = 0;
+        this.startUnlimitedStorageManagement();
+    }
+
+    startUnlimitedStorageManagement() {
+        // Continuous storage management
+        this.startStorageHealthMonitor();
+        this.startAutoCompression();
+    }
+
+    startStorageHealthMonitor() {
+        const monitorStorage = () => {
+            this.checkUnlimitedStorageHealth();
+            setTimeout(monitorStorage, 60000); // Check setiap 1 menit
+        };
+        
+        monitorStorage();
+    }
+
+    startAutoCompression() {
+        const autoCompress = () => {
+            this.performSmartCompression();
+            setTimeout(autoCompress, 2 * 60 * 1000); // Compress setiap 2 menit
+        };
+        
+        autoCompress();
+    }
+
+    checkUnlimitedStorageHealth() {
+        try {
+            const waypoints = this.loadAllWaypoints();
+            const compressed = this.loadCompressedData();
+            const archived = this.loadArchivedData();
+            
+            const totalPoints = waypoints.length + 
+                compressed.reduce((sum, batch) => sum + batch.compressedCount, 0) +
+                archived.reduce((sum, archive) => sum + archive.count, 0);
+            
+            this.totalDataPointsStored = totalPoints;
+            
+            // Emergency cleanup jika mendekati limit
+            if (totalPoints > this.QUOTA_LIMITS.CRITICAL_THRESHOLD) {
+                console.warn('🚨 CRITICAL: Storage near limit, performing emergency compression');
+                this.emergencyStorageCleanup();
+            }
+            
+            return {
+                totalPoints,
+                health: this.checkStorageHealth(),
+                needsCompression: waypoints.length > this.QUOTA_LIMITS.COMPRESSION_THRESHOLD
+            };
+            
+        } catch (error) {
+            console.error('Storage health check failed:', error);
+            return { error: 'check_failed' };
+        }
+    }
+
+    performSmartCompression() {
+        const waypoints = this.loadAllWaypoints();
+        
+        if (waypoints.length > this.QUOTA_LIMITS.COMPRESSION_THRESHOLD) {
+            console.log('🔧 Performing smart compression...');
+            
+            // Compress points yang sudah synced dan berusia > 30 menit
+            const now = new Date();
+            const thirtyMinutesAgo = new Date(now.getTime() - (30 * 60 * 1000));
+            
+            const toCompress = waypoints.filter(wp => 
+                wp.synced && new Date(wp.timestamp) < thirtyMinutesAgo
+            );
+            
+            const toKeep = waypoints.filter(wp => 
+                !wp.synced || new Date(wp.timestamp) >= thirtyMinutesAgo
+            );
+            
+            if (toCompress.length > 0) {
+                this.saveToStorage(toKeep);
+                
+                // Add to compressed storage dengan smart grouping
+                this.addToCompressedStorage(toCompress);
+                
+                console.log(`✅ Smart compression: ${toCompress.length} points compressed, ${toKeep.length} kept active`);
+            }
+        }
+    }
+
+    addToCompressedStorage(waypoints) {
+        const compressed = this.loadCompressedData();
+        
+        // Group by time windows (1 hour chunks) untuk efficiency
+        const grouped = this.groupWaypointsByTime(waypoints, 60 * 60 * 1000); // 1 hour
+        
+        grouped.forEach(group => {
+            compressed.push({
+                batchId: `compressed_${group.startTime}_${group.endTime}`,
+                compressedAt: new Date().toISOString(),
+                originalCount: group.waypoints.length,
+                startTime: new Date(group.startTime).toISOString(),
+                endTime: new Date(group.endTime).toISOString(),
+                data: this.compressWaypoints(group.waypoints)
+            });
+        });
+        
+        // Keep hanya compressed data yang diperlukan
+        if (compressed.length > 100) {
+            compressed.splice(0, compressed.length - 80); // Keep last 80 batches
+        }
+        
+        localStorage.setItem(this.STORAGE_KEYS.COMPRESSED_DATA, JSON.stringify(compressed));
+    }
+
+    groupWaypointsByTime(waypoints, timeWindowMs) {
+        if (waypoints.length === 0) return [];
+        
+        const groups = [];
+        let currentGroup = [];
+        let currentWindowStart = new Date(waypoints[0].timestamp).getTime();
+        
+        waypoints.forEach(waypoint => {
+            const pointTime = new Date(waypoint.timestamp).getTime();
+            
+            if (pointTime - currentWindowStart < timeWindowMs) {
+                currentGroup.push(waypoint);
+            } else {
+                if (currentGroup.length > 0) {
+                    groups.push({
+                        startTime: currentWindowStart,
+                        endTime: currentWindowStart + timeWindowMs,
+                        waypoints: currentGroup
+                    });
+                }
+                currentGroup = [waypoint];
+                currentWindowStart = pointTime;
+            }
+        });
+        
+        // Add the last group
+        if (currentGroup.length > 0) {
+            groups.push({
+                startTime: currentWindowStart,
+                endTime: currentWindowStart + timeWindowMs,
+                waypoints: currentGroup
+            });
+        }
+        
+        return groups;
+    }
+
+    emergencyStorageCleanup() {
+        console.warn('🚨 PERFORMING EMERGENCY STORAGE CLEANUP');
+        
+        try {
+            const waypoints = this.loadAllWaypoints();
+            
+            // Keep only:
+            // 1. Unsynced points
+            // 2. Points from last 15 minutes
+            const fifteenMinutesAgo = new Date(Date.now() - (15 * 60 * 1000));
+            
+            const toKeep = waypoints.filter(wp => 
+                !wp.synced || new Date(wp.timestamp) >= fifteenMinutesAgo
+            );
+            
+            const removedCount = waypoints.length - toKeep.length;
+            
+            this.saveToStorage(toKeep);
+            
+            console.log(`✅ Emergency cleanup: Removed ${removedCount} points, kept ${toKeep.length}`);
+            
+            return removedCount;
+            
+        } catch (error) {
+            console.error('❌ Emergency storage cleanup failed:', error);
+            return 0;
+        }
+    }
+
+    getUnlimitedStorageStats() {
+        const health = this.checkUnlimitedStorageHealth();
+        const metadata = this.getStorageMetadata();
+        
+        return {
+            totalDataPoints: this.totalDataPointsStored,
+            storageHealth: health,
+            compressionEnabled: this.compressionEnabled,
+            autoArchiveEnabled: this.autoArchiveEnabled,
+            metadata: metadata,
+            usage: this.getStorageUsage()
+        };
+    }
+}
+
 // ===== ENHANCED GPS PROCESSOR WITH MULTI-LAYER VALIDATION =====
 class EnhancedGPSProcessor {
     constructor() {
@@ -3236,6 +4210,823 @@ class ResumeManager {
     }
 }
 
+// ===== ENHANCED LOGOUT MANAGER =====
+class LogoutManager {
+    constructor(gpsLogger) {
+        this.gpsLogger = gpsLogger;
+        this.isLoggingOut = false;
+        this.pendingOperations = 0;
+        this.logoutCallbacks = [];
+    }
+
+    async performLogout() {
+        if (this.isLoggingOut) {
+            console.warn('⚠️ Logout already in progress');
+            return;
+        }
+
+        this.isLoggingOut = true;
+        console.log('🚪 Starting controlled logout process...');
+
+        try {
+            // Step 1: Notify semua components
+            this.notifyLogoutStart();
+
+            // Step 2: Stop semua active operations
+            await this.stopAllOperations();
+
+            // Step 3: Save semua pending data
+            await this.saveAllPendingData();
+
+            // Step 4: Cleanup resources
+            await this.cleanupResources();
+
+            // Step 5: Reset state
+            await this.resetSystemState();
+
+            // Step 6: Notify completion
+            this.notifyLogoutComplete();
+
+            console.log('✅ Logout completed successfully');
+            
+        } catch (error) {
+            console.error('❌ Logout failed:', error);
+            this.handleLogoutError(error);
+        } finally {
+            this.isLoggingOut = false;
+        }
+    }
+
+    async stopAllOperations() {
+        console.log('🛑 Stopping all operations...');
+        
+        const stopPromises = [];
+
+        // 1. Stop GPS tracking
+        if (this.gpsLogger.isTracking) {
+            stopPromises.push(this.stopGPSTracking());
+        }
+
+        // 2. Stop data transmission
+        if (this.gpsLogger.sendInterval || this.gpsLogger.syncInterval) {
+            stopPromises.push(this.stopDataTransmission());
+        }
+
+        // 3. Stop unlimited operations
+        if (this.gpsLogger.unlimitedManager) {
+            stopPromises.push(this.stopUnlimitedOperations());
+        }
+
+        // 4. Stop background processors
+        if (this.gpsLogger.gpsProcessor) {
+            stopPromises.push(this.stopBackgroundProcessors());
+        }
+
+        await Promise.allSettled(stopPromises);
+        console.log('✅ All operations stopped');
+    }
+
+    stopGPSTracking() {
+        return new Promise((resolve) => {
+            console.log('📍 Stopping GPS tracking...');
+            
+            if (this.gpsLogger.watchId) {
+                navigator.geolocation.clearWatch(this.gpsLogger.watchId);
+                this.gpsLogger.watchId = null;
+            }
+            
+            this.gpsLogger.isTracking = false;
+            resolve();
+        });
+    }
+
+    stopDataTransmission() {
+        return new Promise((resolve) => {
+            console.log('📡 Stopping data transmission...');
+            
+            if (this.gpsLogger.sendInterval) {
+                clearInterval(this.gpsLogger.sendInterval);
+                this.gpsLogger.sendInterval = null;
+            }
+            
+            if (this.gpsLogger.syncInterval) {
+                clearInterval(this.gpsLogger.syncInterval);
+                this.gpsLogger.syncInterval = null;
+            }
+            
+            resolve();
+        });
+    }
+
+    stopUnlimitedOperations() {
+        return new Promise((resolve) => {
+            console.log('♾️ Stopping unlimited operations...');
+            
+            const manager = this.gpsLogger.unlimitedManager;
+            if (manager) {
+                // Clear semua timeouts dan intervals
+                clearTimeout(manager.backgroundProcessor);
+                clearTimeout(manager.memoryManager);
+                clearTimeout(manager.autoRecovery);
+                clearTimeout(manager.dataArchiver);
+                
+                // Hentikan performance monitoring
+                clearTimeout(manager.performanceMonitor);
+            }
+            
+            resolve();
+        });
+    }
+
+    stopBackgroundProcessors() {
+        return new Promise((resolve) => {
+            console.log('🔄 Stopping background processors...');
+            
+            const processor = this.gpsLogger.gpsProcessor;
+            if (processor) {
+                clearTimeout(processor.backgroundProcessor);
+                clearTimeout(processor.stuckDetector);
+                
+                // Clear processing queue
+                processor.positionQueue = [];
+            }
+            
+            resolve();
+        });
+    }
+
+    async saveAllPendingData() {
+        console.log('💾 Saving all pending data...');
+        
+        const savePromises = [];
+
+        // 1. Save system state
+        savePromises.push(this.saveSystemState());
+
+        // 2. Sync remaining waypoints jika online
+        if (this.gpsLogger.isOnline && this.gpsLogger.unsyncedWaypoints.size > 0) {
+            savePromises.push(this.syncRemainingWaypoints());
+        }
+
+        // 3. Process offline queue
+        if (this.gpsLogger.offlineQueue.getQueueSize() > 0) {
+            savePromises.push(this.processOfflineQueue());
+        }
+
+        // 4. Save storage metadata
+        savePromises.push(this.saveStorageMetadata());
+
+        await Promise.allSettled(savePromises);
+        console.log('✅ All data saved');
+    }
+
+    saveSystemState() {
+        return new Promise((resolve) => {
+            try {
+                this.gpsLogger.saveSystemState();
+                console.log('✅ System state saved');
+                resolve();
+            } catch (error) {
+                console.error('❌ Failed to save system state:', error);
+                resolve(); // Continue logout anyway
+            }
+        });
+    }
+
+    syncRemainingWaypoints() {
+        return new Promise(async (resolve) => {
+            try {
+                console.log(`📡 Syncing ${this.gpsLogger.unsyncedWaypoints.size} remaining waypoints...`);
+                
+                await this.gpsLogger.syncWaypointsToServer();
+                console.log('✅ Remaining waypoints synced');
+                resolve();
+            } catch (error) {
+                console.error('❌ Failed to sync remaining waypoints:', error);
+                resolve(); // Continue logout anyway
+            }
+        });
+    }
+
+    processOfflineQueue() {
+        return new Promise(async (resolve) => {
+            try {
+                const queueSize = this.gpsLogger.offlineQueue.getQueueSize();
+                console.log(`📦 Processing ${queueSize} offline queue items...`);
+                
+                await this.gpsLogger.offlineQueue.processQueue();
+                console.log('✅ Offline queue processed');
+                resolve();
+            } catch (error) {
+                console.error('❌ Failed to process offline queue:', error);
+                resolve(); // Continue logout anyway
+            }
+        });
+    }
+
+    saveStorageMetadata() {
+        return new Promise((resolve) => {
+            try {
+                const storageManager = this.gpsLogger.storageManager;
+                if (storageManager) {
+                    const metadata = storageManager.getStorageMetadata();
+                    metadata.lastLogout = new Date().toISOString();
+                    metadata.sessionEnd = new Date().toISOString();
+                    storageManager.updateStorageMetadata(metadata);
+                    console.log('✅ Storage metadata updated');
+                }
+                resolve();
+            } catch (error) {
+                console.error('❌ Failed to save storage metadata:', error);
+                resolve();
+            }
+        });
+    }
+
+    async cleanupResources() {
+        console.log('🧹 Cleaning up resources...');
+        
+        // 1. Clear intervals dan timeouts global
+        this.clearGlobalIntervals();
+        
+        // 2. Cleanup Firebase references
+        this.cleanupFirebase();
+        
+        // 3. Release memory
+        this.releaseMemory();
+        
+        console.log('✅ Resources cleaned up');
+    }
+
+    clearGlobalIntervals() {
+        // Clear interval yang mungkin terlewat
+        const intervals = [
+            this.gpsLogger.healthCheckInterval,
+            this.gpsLogger.unlimitedHealthMonitor,
+            this.gpsLogger.persistentStateSaver
+        ];
+        
+        intervals.forEach(interval => {
+            if (interval) clearInterval(interval);
+        });
+    }
+
+    cleanupFirebase() {
+        if (this.gpsLogger.firebaseRef) {
+            // Off Firebase listeners
+            this.gpsLogger.firebaseRef.off();
+            this.gpsLogger.firebaseRef = null;
+        }
+        
+        if (this.gpsLogger.chatRef) {
+            this.gpsLogger.chatRef.off();
+            this.gpsLogger.chatRef = null;
+        }
+    }
+
+    releaseMemory() {
+        // Clear large data structures
+        this.gpsLogger.speedHistory = [];
+        this.gpsLogger.distanceHistory = [];
+        this.gpsLogger.accuracyHistory = [];
+        this.gpsLogger.chatMessages = [];
+        
+        // Clear processor histories
+        if (this.gpsLogger.gpsProcessor?.distanceCalculator) {
+            this.gpsLogger.gpsProcessor.distanceCalculator.distanceHistory = [];
+            this.gpsLogger.gpsProcessor.distanceCalculator.speedHistory = [];
+        }
+        
+        // Suggest garbage collection
+        if (window.gc) {
+            window.gc();
+        }
+    }
+
+    async resetSystemState() {
+        console.log('🔄 Resetting system state...');
+        
+        // Reset data state (pertahankan configuration)
+        this.gpsLogger.driverData = null;
+        this.gpsLogger.journeyStatus = 'ready';
+        this.gpsLogger.sessionStartTime = null;
+        this.gpsLogger.totalDistance = 0;
+        this.gpsLogger.dataPoints = 0;
+        this.gpsLogger.lastPosition = null;
+        this.gpsLogger.currentSpeed = 0;
+        
+        // Reset collections
+        this.gpsLogger.unsyncedWaypoints.clear();
+        this.gpsLogger.waypointBuffer.clear();
+        
+        // Reset processors (tapi pertahankan configuration)
+        this.gpsLogger.gpsProcessor?.reset();
+        this.gpsLogger.distanceCalculator?.reset();
+        
+        // Reset health metrics (tapi pertahankan historical data)
+        this.gpsLogger.healthMetrics = {
+            ...this.gpsLogger.healthMetrics,
+            gpsUpdates: 0,
+            waypointSaves: 0,
+            firebaseSends: 0,
+            errors: 0,
+            recoveryAttempts: 0,
+            startTime: new Date(),
+            lastHealthCheck: new Date()
+        };
+        
+        // Reset UI state
+        this.gpsLogger.isChatOpen = false;
+        this.gpsLogger.unreadCount = 0;
+        
+        console.log('✅ System state reset');
+    }
+
+    notifyLogoutStart() {
+        console.log('📢 Notifying components about logout...');
+        this.logoutCallbacks.forEach(callback => {
+            try {
+                callback('start');
+            } catch (error) {
+                console.error('Error in logout callback:', error);
+            }
+        });
+    }
+
+    notifyLogoutComplete() {
+        console.log('📢 Notifying logout completion...');
+        this.logoutCallbacks.forEach(callback => {
+            try {
+                callback('complete');
+            } catch (error) {
+                console.error('Error in logout callback:', error);
+            }
+        });
+        
+        // Update UI
+        this.showLoginScreen();
+        this.gpsLogger.addLog('Logout completed successfully', 'success');
+    }
+
+    handleLogoutError(error) {
+        console.error('❌ Logout error:', error);
+        this.gpsLogger.addLog(`Logout error: ${error.message}`, 'error');
+        
+        // Force cleanup bahkan jika error
+        try {
+            this.forceEmergencyCleanup();
+            this.showLoginScreen();
+        } catch (cleanupError) {
+            console.error('❌ Emergency cleanup failed:', cleanupError);
+        }
+    }
+
+    forceEmergencyCleanup() {
+        console.warn('🚨 Performing emergency cleanup...');
+        
+        // Force stop semua intervals
+        const highestIntervalId = setInterval(() => {}, 0);
+        for (let i = 0; i < highestIntervalId; i++) {
+            clearInterval(i);
+        }
+        
+        // Force clear timeouts
+        const highestTimeoutId = setTimeout(() => {}, 0);
+        for (let i = 0; i < highestTimeoutId; i++) {
+            clearTimeout(i);
+        }
+        
+        // Clear GPS tracking
+        if (this.gpsLogger.watchId) {
+            navigator.geolocation.clearWatch(this.gpsLogger.watchId);
+            this.gpsLogger.watchId = null;
+        }
+        
+        console.log('✅ Emergency cleanup completed');
+    }
+
+    showLoginScreen() {
+        document.getElementById('loginScreen').classList.remove('hidden');
+        document.getElementById('mainInterface').classList.add('hidden');
+        
+        // Reset UI displays
+        this.gpsLogger.updateAllDisplays();
+    }
+
+    addLogoutCallback(callback) {
+        this.logoutCallbacks.push(callback);
+    }
+
+    getLogoutStatus() {
+        return {
+            isLoggingOut: this.isLoggingOut,
+            pendingOperations: this.pendingOperations,
+            callbacksRegistered: this.logoutCallbacks.length
+        };
+    }
+}
+
+// ===== MODIFIKASI UNLIMITED GPS LOGGER DENGAN LOGOUT MANAGER =====
+class UnlimitedDTGPSLoggerWithLogout extends UnlimitedDTGPSLogger {
+    constructor() {
+        super();
+        this.logoutManager = new LogoutManager(this);
+        this.setupLogoutHandlers();
+    }
+
+    setupLogoutHandlers() {
+        // Setup logout button handler
+        const logoutBtn = document.getElementById('logoutBtn');
+        if (logoutBtn) {
+            logoutBtn.addEventListener('click', () => this.initiateLogout());
+        }
+
+        // Add logout callbacks untuk components
+        this.logoutManager.addLogoutCallback((phase) => {
+            this.handleComponentLogout(phase);
+        });
+
+        // Handle browser tab close/window unload
+        window.addEventListener('beforeunload', (event) => {
+            this.handleBrowserClose(event);
+        });
+    }
+
+    async initiateLogout() {
+        // Konfirmasi logout jika journey aktif
+        if (this.journeyStatus === 'started') {
+            const confirmLogout = confirm(
+                'Perjalanan masih aktif. Yakin ingin logout? ' +
+                'Data akan disimpan dan bisa dilanjutkan nanti.'
+            );
+            
+            if (!confirmLogout) {
+                return;
+            }
+        }
+
+        // Show loading state
+        this.addLog('Memulai proses logout...', 'info');
+        
+        // Disable UI selama logout
+        this.disableUI();
+
+        try {
+            await this.logoutManager.performLogout();
+        } catch (error) {
+            console.error('Logout failed:', error);
+            this.addLog('Logout gagal, coba lagi', 'error');
+            this.enableUI();
+        }
+    }
+
+    handleComponentLogout(phase) {
+        console.log(`🔧 Component logout phase: ${phase}`);
+        
+        switch (phase) {
+            case 'start':
+                // Components should prepare for logout
+                this.prepareComponentsForLogout();
+                break;
+                
+            case 'complete':
+                // Components cleanup after logout
+                this.cleanupComponentsAfterLogout();
+                break;
+        }
+    }
+
+    prepareComponentsForLogout() {
+        // Stop semua real-time updates
+        this.stopRealTimeUpdates();
+        
+        // Disable user interactions
+        this.disableUserInteractions();
+        
+        // Save component states
+        this.saveComponentStates();
+    }
+
+    cleanupComponentsAfterLogout() {
+        // Reset component states
+        this.resetComponentStates();
+        
+        // Clear component data
+        this.clearComponentData();
+        
+        // Enable UI untuk login berikutnya
+        this.enableUI();
+    }
+
+    handleBrowserClose(event) {
+        if (this.journeyStatus === 'started') {
+            // Save state sebelum tab ditutup
+            this.saveSystemState();
+            
+            // Konfirmasi untuk hindari accidental close
+            event.preventDefault();
+            event.returnValue = 
+                'Perjalanan masih aktif. Data telah disimpan dan bisa dilanjutkan saat membuka aplikasi kembali.';
+            return event.returnValue;
+        }
+    }
+
+    stopRealTimeUpdates() {
+        // Stop semua real-time UI updates
+        const updateElements = document.querySelectorAll('[data-real-time-update]');
+        updateElements.forEach(element => {
+            element.classList.add('update-paused');
+        });
+    }
+
+    disableUserInteractions() {
+        // Disable semua buttons dan form controls
+        const interactiveElements = document.querySelectorAll(
+            'button, input, select, textarea'
+        );
+        
+        interactiveElements.forEach(element => {
+            element.disabled = true;
+        });
+        
+        // Add loading indicator
+        this.showLoadingIndicator('Logging out...');
+    }
+
+    enableUI() {
+        // Enable semua buttons dan form controls
+        const interactiveElements = document.querySelectorAll(
+            'button, input, select, textarea'
+        );
+        
+        interactiveElements.forEach(element => {
+            element.disabled = false;
+        });
+        
+        // Remove loading indicator
+        this.hideLoadingIndicator();
+    }
+
+    showLoadingIndicator(message) {
+        // Create atau show loading indicator
+        let loader = document.getElementById('logoutLoader');
+        if (!loader) {
+            loader = document.createElement('div');
+            loader.id = 'logoutLoader';
+            loader.className = 'logout-loading';
+            loader.innerHTML = `
+                <div class="loading-spinner"></div>
+                <div class="loading-text">${message}</div>
+            `;
+            document.body.appendChild(loader);
+        }
+        loader.style.display = 'flex';
+    }
+
+    hideLoadingIndicator() {
+        const loader = document.getElementById('logoutLoader');
+        if (loader) {
+            loader.style.display = 'none';
+        }
+    }
+
+    saveComponentStates() {
+        // Save state dari berbagai components
+        const componentStates = {
+            chat: {
+                isOpen: this.isChatOpen,
+                unreadCount: this.unreadCount
+            },
+            ui: {
+                lastActiveTab: this.getActiveTab(),
+                scrollPositions: this.getScrollPositions()
+            }
+        };
+        
+        this.storageManager.saveAppSettings({
+            componentStates,
+            lastLogout: new Date().toISOString()
+        });
+    }
+
+    resetComponentStates() {
+        // Reset semua component states
+        this.isChatOpen = false;
+        this.unreadCount = 0;
+        this.chatMessages = [];
+        
+        // Reset UI state
+        this.resetUIState();
+    }
+
+    clearComponentData() {
+        // Clear data yang tidak perlu dipertahankan
+        this.speedHistory = [];
+        this.distanceHistory = [];
+        this.accuracyHistory = [];
+        
+        // Clear processing buffers
+        if (this.gpsProcessor) {
+            this.gpsProcessor.positionQueue = [];
+        }
+    }
+
+    resetUIState() {
+        // Reset semua UI elements ke state awal
+        const resetElements = document.querySelectorAll('[data-reset-on-logout]');
+        resetElements.forEach(element => {
+            if (element.type === 'text' || element.type === 'password') {
+                element.value = '';
+            } else if (element.classList.contains('active')) {
+                element.classList.remove('active');
+            }
+        });
+        
+        // Reset chat UI
+        const chatMessages = document.getElementById('chatMessages');
+        if (chatMessages) {
+            chatMessages.innerHTML = '';
+        }
+        
+        // Reset logs
+        const systemLog = document.getElementById('systemLog');
+        if (systemLog) {
+            systemLog.innerHTML = '';
+        }
+    }
+
+    getActiveTab() {
+        // Get currently active tab
+        const activeTab = document.querySelector('.tab.active');
+        return activeTab ? activeTab.id : null;
+    }
+
+    getScrollPositions() {
+        // Get scroll positions untuk nanti restore
+        return {
+            main: document.getElementById('mainContent')?.scrollTop || 0,
+            chat: document.getElementById('chatMessages')?.scrollTop || 0,
+            logs: document.getElementById('systemLog')?.scrollTop || 0
+        };
+    }
+
+    // Override method logout original
+    logout() {
+        this.initiateLogout();
+    }
+
+    getLogoutStatus() {
+        return this.logoutManager.getLogoutStatus();
+    }
+}
+
+// ===== MODIFIKASI MAIN LOGGER UNTUK UNLIMITED OPERATION =====
+class UnlimitedDTGPSLogger extends EnhancedDTGPSLogger {
+    constructor() {
+        super();
+        
+        // Replace components dengan unlimited versions
+        this.unlimitedManager = new UnlimitedOperationManager();
+        this.gpsProcessor = new UnlimitedGPSProcessor();
+        this.storageManager = new UnlimitedStorageManager();
+        
+        this.unlimitedMode = true;
+        this.startUnlimitedOperation();
+        
+        console.log('♾️ UNLIMITED GPS Logger initialized - designed for 24/7 operation');
+    }
+
+    startUnlimitedOperation() {
+        // Start semua unlimited processes
+        this.startInfiniteDataTransmission();
+        this.startUnlimitedHealthMonitoring();
+        this.startPersistentStateSaving();
+    }
+
+    startInfiniteDataTransmission() {
+        // Ganti interval-based dengan recursive timeout untuk infinite operation
+        const transmitData = () => {
+            if (this.isOnline && this.lastPosition) {
+                this.sendRealTimeData().catch(error => {
+                    console.warn('Data transmission failed, will retry:', error);
+                });
+            }
+            
+            // Always schedule next execution
+            setTimeout(transmitData, 2000);
+        };
+        
+        const syncWaypoints = () => {
+            if (this.isOnline && this.unsyncedWaypoints.size > 0) {
+                this.syncWaypointsToServer().catch(error => {
+                    console.warn('Sync failed, will retry:', error);
+                });
+            }
+            
+            // Always schedule next execution
+            setTimeout(syncWaypoints, 30000);
+        };
+        
+        // Start both processes
+        transmitData();
+        syncWaypoints();
+    }
+
+    startUnlimitedHealthMonitoring() {
+        const monitorHealth = () => {
+            this.checkUnlimitedSystemHealth();
+            setTimeout(monitorHealth, 30000); // Check setiap 30 detik
+        };
+        
+        monitorHealth();
+    }
+
+    startPersistentStateSaving() {
+        const saveState = () => {
+            this.saveSystemState();
+            setTimeout(saveState, 60000); // Save setiap 1 menit
+        };
+        
+        saveState();
+    }
+
+    checkUnlimitedSystemHealth() {
+        // Comprehensive health checking untuk unlimited operation
+        const now = Date.now();
+        
+        // Check GPS health
+        if (this.isTracking && now - this.healthMetrics.lastHealthCheck > 60000) {
+            console.warn('⚠️ GPS may be stuck, attempting recovery...');
+            this.recoverGPSTracking();
+        }
+        
+        // Check memory health
+        if (this.waypointBuffer.count > 100000) {
+            console.warn('⚠️ Large waypoint buffer, performing cleanup...');
+            this.cleanupWaypointBuffer();
+        }
+        
+        // Check storage health
+        const storageHealth = this.storageManager.checkUnlimitedStorageHealth();
+        if (storageHealth.health === 'critical') {
+            console.warn('⚠️ Critical storage health, performing cleanup...');
+            this.storageManager.emergencyStorageCleanup();
+        }
+        
+        this.healthMetrics.lastHealthCheck = now;
+    }
+
+    recoverGPSTracking() {
+        if (this.watchId) {
+            navigator.geolocation.clearWatch(this.watchId);
+            this.watchId = null;
+        }
+        
+        setTimeout(() => {
+            if (this.journeyStatus === 'started') {
+                this.startRealGPSTracking();
+                console.log('✅ GPS tracking recovered');
+            }
+        }, 1000);
+    }
+
+    cleanupWaypointBuffer() {
+        const recent = this.waypointBuffer.getRecent(50000); // Keep 50k most recent
+        this.waypointBuffer.clear();
+        recent.forEach(point => this.waypointBuffer.push(point));
+        console.log(`🧹 Waypoint buffer cleaned: ${recent.length} points kept`);
+    }
+
+    // Override untuk unlimited operation
+    handleGPSPosition(position) {
+        // Update unlimited manager
+        this.unlimitedManager.performanceMetrics.positionsProcessed++;
+        
+        // Process seperti biasa
+        return super.handleGPSPosition(position);
+    }
+
+    getUnlimitedStatus() {
+        return {
+            operation: this.unlimitedManager.getUnlimitedMetrics(),
+            storage: this.storageManager.getUnlimitedStorageStats(),
+            system: {
+                uptime: this.unlimitedManager.formatUptime(Date.now() - this.unlimitedManager.operationStartTime),
+                journeyStatus: this.journeyStatus,
+                isTracking: this.isTracking,
+                isOnline: this.isOnline,
+                backgroundMode: document.hidden
+            },
+            performance: {
+                gpsUpdates: this.healthMetrics.gpsUpdates,
+                waypointSaves: this.healthMetrics.waypointSaves,
+                firebaseSends: this.healthMetrics.firebaseSends,
+                totalDistance: this.totalDistance
+            }
+        };
+    }
+}
+
 // ===== MAIN ENHANCED GPS LOGGER CLASS =====
 class EnhancedDTGPSLogger {
     constructor() {
@@ -4340,21 +6131,83 @@ class EnhancedDTGPSLogger {
     }
 }
 
+// ===== CSS UNTUK LOADING INDICATOR =====
+const logoutStyles = `
+.logout-loading {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.7);
+    display: none;
+    justify-content: center;
+    align-items: center;
+    flex-direction: column;
+    z-index: 10000;
+    color: white;
+}
+
+.loading-spinner {
+    border: 4px solid #f3f3f3;
+    border-top: 4px solid #3498db;
+    border-radius: 50%;
+    width: 50px;
+    height: 50px;
+    animation: spin 2s linear infinite;
+    margin-bottom: 20px;
+}
+
+.loading-text {
+    font-size: 16px;
+    font-weight: bold;
+}
+
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+.update-paused {
+    opacity: 0.6;
+    pointer-events: none;
+}
+
+[data-reset-on-logout] {
+    transition: all 0.3s ease;
+}
+`;
+
+// Inject styles ke document
+const styleSheet = document.createElement('style');
+styleSheet.textContent = logoutStyles;
+document.head.appendChild(styleSheet);
+
 // ===== APPLICATION INITIALIZATION =====
 document.addEventListener('DOMContentLoaded', function() {
-    console.log('🚀 Initializing Enhanced GPS Tracker...');
+    console.log('🚀 Initializing Enhanced GPS Tracker with Unlimited Operation and Logout Management...');
     
     try {
-        window.dtLogger = new EnhancedDTGPSLogger();
-        console.log('✅ Enhanced GPS Tracker initialized successfully');
+        window.dtLogger = new UnlimitedDTGPSLoggerWithLogout();
+        console.log('✅ Enhanced GPS Tracker with Unlimited Operation and Logout Management initialized successfully');
         
         // Expose diagnostics for debugging
         window.getGPSDiagnostics = () => window.dtLogger?.printDiagnostics();
         window.getEnhancedStatus = () => window.dtLogger?.getEnhancedSystemStatus();
+        window.getUnlimitedStatus = () => window.dtLogger?.getUnlimitedStatus();
+        window.getLogoutStatus = () => window.dtLogger?.getLogoutStatus();
+        window.forceLogout = () => window.dtLogger?.initiateLogout();
         
     } catch (error) {
         console.error('❌ Failed to initialize GPS Tracker:', error);
-        alert('Gagal menginisialisasi aplikasi GPS. Silakan refresh halaman.');
+        // Fallback ke basic version
+        try {
+            window.dtLogger = new EnhancedDTGPSLogger();
+            console.log('🔄 Fallback to basic Enhanced GPS Tracker');
+        } catch (fallbackError) {
+            console.error('❌ Fallback also failed:', fallbackError);
+            alert('Gagal menginisialisasi aplikasi GPS. Silakan refresh halaman.');
+        }
     }
 });
 
@@ -4384,4 +6237,37 @@ if ('serviceWorker' in navigator) {
         });
 }
 
-console.log('🎉 script-mobile.js loaded successfully with ENHANCED features!');
+// ===== PAGE VISIBILITY HANDLING UNTUK UNLIMITED OPERATION =====
+document.addEventListener('visibilitychange', function() {
+    if (window.dtLogger && window.dtLogger.unlimitedMode) {
+        const isBackground = document.hidden;
+        
+        if (isBackground) {
+            console.log('📱 Entering background - unlimited operation continues');
+            // Tidak perlu lakukan apa-apa, system akan tetap berjalan
+        } else {
+            console.log('📱 Returning to foreground - checking system health');
+            setTimeout(() => {
+                window.dtLogger.checkUnlimitedSystemHealth();
+                window.dtLogger.updateAllDisplays();
+            }, 1000);
+        }
+    }
+});
+
+// ===== BEFOREUNLOAD HANDLING UNTUK PERSISTENCE =====
+window.addEventListener('beforeunload', function(event) {
+    if (window.dtLogger && window.dtLogger.unlimitedMode) {
+        console.log('💾 Saving state before unload...');
+        window.dtLogger.saveSystemState();
+        
+        // Untuk journey yang aktif, konfirmasi
+        if (window.dtLogger.journeyStatus === 'started') {
+            event.preventDefault();
+            event.returnValue = 'Perjalanan masih aktif. Data akan terus tersimpan dan bisa dilanjutkan saat membuka kembali.';
+            return event.returnValue;
+        }
+    }
+});
+
+console.log('🎉 script-mobile.js loaded successfully with ENHANCED UNLIMITED features and LOGOUT MANAGEMENT!');
