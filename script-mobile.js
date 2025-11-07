@@ -567,6 +567,1887 @@ class EnhancedSpeedCalculator {
     }
 }
 
+// ===== ENHANCED RETRY MANAGER =====
+class EnhancedRetryManager {
+    constructor() {
+        this.retryStrategies = {
+            'critical': { 
+                maxAttempts: 10, 
+                baseDelay: 1000, 
+                maxDelay: 60000,
+                backoffMultiplier: 2,
+                priority: 100
+            },
+            'high': { 
+                maxAttempts: 8, 
+                baseDelay: 2000, 
+                maxDelay: 30000,
+                backoffMultiplier: 1.5,
+                priority: 80
+            },
+            'normal': { 
+                maxAttempts: 5, 
+                baseDelay: 5000, 
+                maxDelay: 15000,
+                backoffMultiplier: 1.2,
+                priority: 50
+            },
+            'low': { 
+                maxAttempts: 3, 
+                baseDelay: 10000, 
+                maxDelay: 30000,
+                backoffMultiplier: 1,
+                priority: 20
+            },
+            'maintenance': { 
+                maxAttempts: 20, 
+                baseDelay: 30000, 
+                maxDelay: 300000,
+                backoffMultiplier: 2,
+                priority: 5
+            }
+        };
+
+        this.retryQueues = {};
+        this.isProcessing = false;
+        this.retryStats = {
+            totalAttempts: 0,
+            successfulRetries: 0,
+            failedRetries: 0,
+            totalSavedByRetry: 0
+        };
+        this.retryCallbacks = [];
+
+        this.init();
+    }
+
+    init() {
+        // Initialize queues for each priority
+        Object.keys(this.retryStrategies).forEach(priority => {
+            this.retryQueues[priority] = [];
+        });
+    }
+
+    scheduleRetry(item, priority = 'normal', context = {}) {
+        const strategy = this.retryStrategies[priority];
+        if (!strategy) {
+            console.warn(`Unknown priority: ${priority}, using normal`);
+            return this.scheduleRetry(item, 'normal', context);
+        }
+
+        const retryItem = {
+            id: `retry_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+            data: item,
+            priority: priority,
+            strategy: strategy,
+            attempts: 0,
+            lastAttempt: null,
+            nextRetry: Date.now(),
+            context: context,
+            createdAt: new Date().toISOString(),
+            status: 'scheduled'
+        };
+
+        this.retryQueues[priority].push(retryItem);
+        this.retryQueues[priority].sort((a, b) => a.nextRetry - b.nextRetry);
+
+        console.log(`🔄 Retry scheduled [${priority}]: ${retryItem.id}`);
+        
+        // Start processing if not already running
+        if (!this.isProcessing) {
+            this.processRetries();
+        }
+
+        return retryItem.id;
+    }
+
+    async processRetries() {
+        if (this.isProcessing) return;
+        
+        this.isProcessing = true;
+        
+        try {
+            // Process queues in priority order
+            const priorities = Object.keys(this.retryStrategies)
+                .sort((a, b) => this.retryStrategies[b].priority - this.retryStrategies[a].priority);
+
+            for (const priority of priorities) {
+                await this.processPriorityQueue(priority);
+            }
+        } catch (error) {
+            console.error('❌ Error in retry processor:', error);
+        } finally {
+            this.isProcessing = false;
+            
+            // Schedule next processing if there are still items
+            if (this.hasPendingRetries()) {
+                setTimeout(() => this.processRetries(), 1000);
+            }
+        }
+    }
+
+    async processPriorityQueue(priority) {
+        const queue = this.retryQueues[priority];
+        const now = Date.now();
+        
+        for (let i = 0; i < queue.length; i++) {
+            const item = queue[i];
+            
+            if (item.nextRetry > now) continue;
+            if (item.attempts >= item.strategy.maxAttempts) {
+                // Max attempts reached, remove from queue
+                console.warn(`🚨 Max attempts reached for: ${item.id}`);
+                this.retryStats.failedRetries++;
+                queue.splice(i, 1);
+                i--;
+                continue;
+            }
+
+            // Remove from queue temporarily
+            queue.splice(i, 1);
+            i--;
+
+            try {
+                item.attempts++;
+                item.lastAttempt = new Date();
+                item.status = 'processing';
+                
+                console.log(`🔄 Retry attempt ${item.attempts}/${item.strategy.maxAttempts} for: ${item.id}`);
+                
+                await this.executeRetry(item);
+                
+                // Success - no need to reschedule
+                item.status = 'completed';
+                this.retryStats.successfulRetries++;
+                this.retryStats.totalSavedByRetry++;
+                
+                console.log(`✅ Retry successful: ${item.id}`);
+                
+                // Notify callbacks
+                this.notifyCallbacks({
+                    id: item.id,
+                    status: 'completed',
+                    attempts: item.attempts,
+                    data: item.data
+                });
+                
+            } catch (error) {
+                // Calculate next retry with exponential backoff
+                const delay = Math.min(
+                    item.strategy.baseDelay * Math.pow(item.strategy.backoffMultiplier, item.attempts - 1),
+                    item.strategy.maxDelay
+                );
+                
+                item.nextRetry = Date.now() + delay;
+                item.status = 'failed';
+                item.lastError = error.message;
+                
+                console.warn(`❌ Retry failed: ${item.id}, next attempt in ${delay}ms`);
+                
+                // Put back in queue for next retry
+                this.retryQueues[priority].push(item);
+                this.retryQueues[priority].sort((a, b) => a.nextRetry - b.nextRetry);
+                
+                // Notify callbacks
+                this.notifyCallbacks({
+                    id: item.id,
+                    status: 'failed',
+                    attempts: item.attempts,
+                    error: error.message,
+                    nextRetry: item.nextRetry
+                });
+            }
+
+            this.retryStats.totalAttempts++;
+        }
+    }
+
+    async executeRetry(retryItem) {
+        const { data, context } = retryItem;
+        
+        switch (context.type) {
+            case 'firebase_sync':
+                return await this.retryFirebaseSync(data, context);
+            case 'waypoint_upload':
+                return await this.retryWaypointUpload(data, context);
+            case 'cleanup_operation':
+                return await this.retryCleanup(data, context);
+            default:
+                return await this.retryGeneric(data, context);
+        }
+    }
+
+    async retryFirebaseSync(data, context) {
+        if (!window.dtLogger?.firebaseRef) {
+            throw new Error('Firebase reference not available');
+        }
+
+        // Add retry metadata
+        const enhancedData = {
+            ...data,
+            retryAttempt: context.attemptNumber || 1,
+            lastRetry: new Date().toISOString(),
+            originalTimestamp: data.timestamp
+        };
+
+        await window.dtLogger.firebaseRef.set(enhancedData);
+    }
+
+    async retryWaypointUpload(data, context) {
+        // Implementation for waypoint batch upload
+        const batchRef = database.ref(`/waypoints/${data.unit}/batches/${data.batchId}`);
+        await batchRef.set(data);
+    }
+
+    async retryCleanup(data, context) {
+        // Implementation for cleanup operations
+        const { unitId, sessionId } = data;
+        const cleanupPromises = [
+            database.ref('/units/' + unitId).remove(),
+            database.ref('/waypoints/' + unitId).remove(),
+            database.ref('/sessions/' + sessionId).remove()
+        ];
+
+        await Promise.all(cleanupPromises);
+    }
+
+    async retryGeneric(data, context) {
+        // Generic retry implementation
+        if (typeof context.operation === 'function') {
+            return await context.operation(data);
+        }
+        throw new Error('No retry operation defined');
+    }
+
+    hasPendingRetries() {
+        return Object.values(this.retryQueues).some(queue => queue.length > 0);
+    }
+
+    getQueueStats() {
+        const stats = {
+            totalPending: 0,
+            byPriority: {},
+            nextRetryTime: null,
+            overallStats: this.retryStats
+        };
+
+        Object.keys(this.retryQueues).forEach(priority => {
+            const queue = this.retryQueues[priority];
+            stats.byPriority[priority] = {
+                count: queue.length,
+                nextRetry: queue.length > 0 ? queue[0].nextRetry : null
+            };
+            stats.totalPending += queue.length;
+        });
+
+        // Find earliest next retry time
+        const nextRetries = Object.values(stats.byPriority)
+            .map(stat => stat.nextRetry)
+            .filter(time => time !== null);
+        
+        stats.nextRetryTime = nextRetries.length > 0 ? Math.min(...nextRetries) : null;
+
+        return stats;
+    }
+
+    addRetryCallback(callback) {
+        this.retryCallbacks.push(callback);
+    }
+
+    notifyCallbacks(result) {
+        this.retryCallbacks.forEach(callback => {
+            try {
+                callback(result);
+            } catch (error) {
+                console.error('Error in retry callback:', error);
+            }
+        });
+    }
+
+    cancelRetry(retryId) {
+        for (const priority in this.retryQueues) {
+            const queue = this.retryQueues[priority];
+            const index = queue.findIndex(item => item.id === retryId);
+            if (index !== -1) {
+                queue.splice(index, 1);
+                console.log(`🗑️ Cancelled retry: ${retryId}`);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    clearCompleted() {
+        let clearedCount = 0;
+        
+        Object.keys(this.retryQueues).forEach(priority => {
+            const queue = this.retryQueues[priority];
+            const initialLength = queue.length;
+            this.retryQueues[priority] = queue.filter(item => 
+                item.attempts < item.strategy.maxAttempts
+            );
+            clearedCount += (initialLength - this.retryQueues[priority].length);
+        });
+
+        console.log(`🧹 Cleared ${clearedCount} completed/failed retries`);
+        return clearedCount;
+    }
+
+    getRetryHealth() {
+        const stats = this.getQueueStats();
+        const totalPending = stats.totalPending;
+        
+        if (totalPending === 0) return 'healthy';
+        if (totalPending > 100) return 'critical';
+        if (totalPending > 50) return 'warning';
+        return 'normal';
+    }
+}
+
+// ===== ENHANCED STORAGE MANAGER =====
+class EnhancedStorageManager {
+    constructor() {
+        this.STORAGE_KEYS = {
+            WAYPOINTS: 'enhanced_gps_waypoints_v2',
+            COMPRESSED_DATA: 'compressed_gps_data',
+            ARCHIVED_DATA: 'archived_gps_data',
+            SYNC_STATUS: 'enhanced_sync_status_v2',
+            STORAGE_METADATA: 'storage_metadata',
+            SESSION_DATA: 'enhanced_session_data',
+            DRIVER_PROFILES: 'driver_profiles',
+            VEHICLE_PROFILES: 'vehicle_profiles',
+            SYSTEM_STATE: 'system_state_backup',
+            APP_SETTINGS: 'app_settings'
+        };
+        
+        this.QUOTA_LIMITS = {
+            MAX_WAYPOINTS: 250000, // 250K waypoints
+            WARNING_THRESHOLD: 200000,
+            CRITICAL_THRESHOLD: 230000,
+            COMPRESSION_THRESHOLD: 50000, // Compress after 50K points
+            ARCHIVE_THRESHOLD: 100000, // Archive after 100K points
+            CLEANUP_PERCENTAGE: 0.15 // Clean 15% when full
+        };
+        
+        this.compressionEnabled = true;
+        this.autoArchiveEnabled = true;
+        
+        this.init();
+    }
+
+    init() {
+        this.ensureStorageStructure();
+        this.migrateOldData();
+        this.startStorageMonitor();
+    }
+
+    ensureStorageStructure() {
+        try {
+            // Initialize with empty arrays if not exists
+            if (!localStorage.getItem(this.STORAGE_KEYS.WAYPOINTS)) {
+                localStorage.setItem(this.STORAGE_KEYS.WAYPOINTS, JSON.stringify([]));
+            }
+            if (!localStorage.getItem(this.STORAGE_KEYS.COMPRESSED_DATA)) {
+                localStorage.setItem(this.STORAGE_KEYS.COMPRESSED_DATA, JSON.stringify([]));
+            }
+            if (!localStorage.getItem(this.STORAGE_KEYS.ARCHIVED_DATA)) {
+                localStorage.setItem(this.STORAGE_KEYS.ARCHIVED_DATA, JSON.stringify([]));
+            }
+
+            // Initialize metadata
+            if (!localStorage.getItem(this.STORAGE_KEYS.STORAGE_METADATA)) {
+                this.updateStorageMetadata({
+                    totalStored: 0,
+                    compressedCount: 0,
+                    archivedCount: 0,
+                    compressionRatio: 1.0,
+                    lastMaintenance: new Date().toISOString(),
+                    storageVersion: '2.0'
+                });
+            }
+
+            // Initialize other storage keys
+            const defaultKeys = [
+                this.STORAGE_KEYS.SYNC_STATUS,
+                this.STORAGE_KEYS.SESSION_DATA,
+                this.STORAGE_KEYS.DRIVER_PROFILES,
+                this.STORAGE_KEYS.VEHICLE_PROFILES,
+                this.STORAGE_KEYS.SYSTEM_STATE,
+                this.STORAGE_KEYS.APP_SETTINGS
+            ];
+
+            defaultKeys.forEach(key => {
+                if (!localStorage.getItem(key)) {
+                    localStorage.setItem(key, JSON.stringify({}));
+                }
+            });
+
+            console.log('✅ Enhanced storage structure initialized');
+        } catch (error) {
+            console.error('❌ Error initializing storage structure:', error);
+        }
+    }
+
+    migrateOldData() {
+        // Migrate from old storage format if exists
+        const oldWaypoints = localStorage.getItem('enhanced_gps_waypoints');
+        if (oldWaypoints) {
+            try {
+                const waypoints = JSON.parse(oldWaypoints);
+                this.saveToStorage(waypoints);
+                localStorage.removeItem('enhanced_gps_waypoints');
+                console.log('✅ Migrated old waypoints data');
+            } catch (error) {
+                console.error('❌ Error migrating old data:', error);
+            }
+        }
+    }
+
+    startStorageMonitor() {
+        // Monitor storage every 5 minutes
+        setInterval(() => {
+            this.checkStorageHealth();
+        }, 300000);
+    }
+
+    async saveWaypoint(waypoint) {
+        try {
+            if (!waypoint || !waypoint.id) {
+                throw new Error('Invalid waypoint data');
+            }
+
+            let allWaypoints = this.loadAllWaypoints();
+            
+            // Check if we need compression or archiving
+            if (allWaypoints.length >= this.QUOTA_LIMITS.COMPRESSION_THRESHOLD && this.compressionEnabled) {
+                console.log('📦 Compressing waypoint data...');
+                allWaypoints = await this.compressWaypoints(allWaypoints);
+            }
+
+            if (allWaypoints.length >= this.QUOTA_LIMITS.ARCHIVE_THRESHOLD && this.autoArchiveEnabled) {
+                console.log('🗃️ Archiving old waypoints...');
+                allWaypoints = this.archiveOldWaypoints(allWaypoints);
+            }
+
+            // Check storage limits
+            if (allWaypoints.length >= this.QUOTA_LIMITS.MAX_WAYPOINTS) {
+                console.warn('🚨 Storage limit reached, performing emergency cleanup');
+                allWaypoints = this.performEmergencyCleanup(allWaypoints);
+            }
+
+            const existingIndex = allWaypoints.findIndex(wp => wp.id === waypoint.id);
+            
+            if (existingIndex >= 0) {
+                // Update existing waypoint
+                allWaypoints[existingIndex] = {
+                    ...allWaypoints[existingIndex],
+                    ...waypoint,
+                    updatedAt: new Date().toISOString(),
+                    updateCount: (allWaypoints[existingIndex].updateCount || 0) + 1
+                };
+            } else {
+                // Add new waypoint with enhanced metadata
+                const enhancedWaypoint = {
+                    ...waypoint,
+                    createdAt: new Date().toISOString(),
+                    storageVersion: '2.0',
+                    dataQuality: this.assessDataQuality(waypoint),
+                    sizeEstimate: this.calculateSize(waypoint),
+                    compressionState: 'raw'
+                };
+                allWaypoints.push(enhancedWaypoint);
+            }
+
+            this.saveToStorage(allWaypoints);
+            
+            // Update sync status
+            this.updateSyncStatus({
+                totalWaypoints: allWaypoints.length,
+                unsyncedCount: allWaypoints.filter(w => !w.synced).length,
+                lastSave: new Date().toISOString(),
+                storageHealth: this.checkStorageHealth()
+            });
+
+            // Update storage metadata
+            this.updateStorageMetadata({
+                totalStored: allWaypoints.length,
+                lastUpdate: new Date().toISOString()
+            });
+
+            return true;
+            
+        } catch (error) {
+            console.error('❌ Failed to save waypoint:', error);
+            
+            // Emergency fallback: try to save with minimal data
+            if (error.name === 'QuotaExceededError') {
+                return this.emergencySave(waypoint);
+            }
+            
+            return false;
+        }
+    }
+
+    async compressWaypoints(waypoints) {
+        if (!this.compressionEnabled) return waypoints;
+
+        try {
+            console.log('🔧 Compressing waypoint data...');
+            
+            // Simple compression: remove redundant data and use smaller keys
+            const compressed = waypoints.map(wp => ({
+                i: wp.id, // id
+                la: wp.lat, // lat
+                ln: wp.lng, // lng
+                t: wp.timestamp, // timestamp
+                s: wp.synced, // synced
+                a: wp.accuracy, // accuracy
+                sp: wp.speed, // speed
+                c: wp.confidence // confidence
+                // Remove less critical fields for compression
+            }));
+
+            // Store compressed data
+            const existingCompressed = this.loadCompressedData();
+            existingCompressed.push({
+                batchId: `compressed_${Date.now()}`,
+                originalCount: waypoints.length,
+                compressedCount: compressed.length,
+                compressionRatio: (waypoints.length / compressed.length).toFixed(2),
+                compressedAt: new Date().toISOString(),
+                data: compressed
+            });
+
+            localStorage.setItem(this.STORAGE_KEYS.COMPRESSED_DATA, JSON.stringify(existingCompressed));
+            
+            // Update metadata
+            this.updateStorageMetadata({
+                compressedCount: existingCompressed.length,
+                compressionRatio: (waypoints.length / compressed.length)
+            });
+
+            console.log(`✅ Compressed ${waypoints.length} waypoints`);
+            
+            // Return empty array since data is now compressed
+            return [];
+
+        } catch (error) {
+            console.error('❌ Compression failed:', error);
+            return waypoints; // Return original data if compression fails
+        }
+    }
+
+    archiveOldWaypoints(waypoints) {
+        if (!this.autoArchiveEnabled) return waypoints;
+
+        try {
+            console.log('🗃️ Archiving old waypoints...');
+            
+            const now = new Date();
+            const archiveThreshold = new Date(now.getTime() - (7 * 24 * 60 * 60 * 1000)); // 7 days ago
+            
+            const toArchive = waypoints.filter(wp => {
+                const wpDate = new Date(wp.createdAt || wp.timestamp);
+                return wpDate < archiveThreshold && wp.synced; // Only archive synced old data
+            });
+
+            const toKeep = waypoints.filter(wp => {
+                const wpDate = new Date(wp.createdAt || wp.timestamp);
+                return wpDate >= archiveThreshold || !wp.synced; // Keep recent or unsynced data
+            });
+
+            if (toArchive.length > 0) {
+                const existingArchived = this.loadArchivedData();
+                existingArchived.push({
+                    archiveId: `archive_${Date.now()}`,
+                    archivedAt: new Date().toISOString(),
+                    count: toArchive.length,
+                    data: toArchive
+                });
+
+                localStorage.setItem(this.STORAGE_KEYS.ARCHIVED_DATA, JSON.stringify(existingArchived));
+                
+                // Update metadata
+                this.updateStorageMetadata({
+                    archivedCount: existingArchived.length
+                });
+
+                console.log(`✅ Archived ${toArchive.length} old waypoints`);
+            }
+
+            return toKeep;
+
+        } catch (error) {
+            console.error('❌ Archiving failed:', error);
+            return waypoints;
+        }
+    }
+
+    performEmergencyCleanup(waypoints) {
+        console.warn('🚨 Performing emergency storage cleanup');
+        
+        // Remove oldest synced waypoints first
+        const synced = waypoints.filter(wp => wp.synced);
+        const unsynced = waypoints.filter(wp => !wp.synced);
+        
+        // Sort synced by creation date (oldest first)
+        synced.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+        
+        // Remove oldest 15%
+        const removeCount = Math.floor(waypoints.length * this.QUOTA_LIMITS.CLEANUP_PERCENTAGE);
+        const remainingSynced = synced.slice(removeCount);
+        
+        // Combine back with unsynced
+        const cleaned = [...remainingSynced, ...unsynced];
+        
+        console.log(`🧹 Emergency cleanup: Removed ${removeCount} waypoints, ${cleaned.length} remaining`);
+        
+        return cleaned;
+    }
+
+    emergencySave(waypoint) {
+        try {
+            // Extreme minimal save - only critical data
+            const emergencyData = {
+                id: waypoint.id,
+                lat: waypoint.lat,
+                lng: waypoint.lng,
+                t: waypoint.timestamp, // truncated key
+                s: false // synced
+            };
+
+            const emergencyKey = 'emergency_gps_data';
+            let emergencyStorage = localStorage.getItem(emergencyKey);
+            let data = emergencyStorage ? JSON.parse(emergencyStorage) : [];
+            
+            data.push(emergencyData);
+            
+            // Keep only last 1000 emergency points
+            if (data.length > 1000) {
+                data = data.slice(-1000);
+            }
+            
+            localStorage.setItem(emergencyKey, JSON.stringify(data));
+            console.warn('🚨 Saved to emergency storage');
+            return true;
+            
+        } catch (error) {
+            console.error('❌ Emergency save failed:', error);
+            return false;
+        }
+    }
+
+    calculateSize(obj) {
+        // Rough size estimation in bytes
+        return JSON.stringify(obj).length;
+    }
+
+    assessDataQuality(waypoint) {
+        let qualityScore = 1.0;
+        
+        // Deduct points for poor accuracy
+        if (waypoint.accuracy > 50) qualityScore -= 0.3;
+        else if (waypoint.accuracy > 25) qualityScore -= 0.1;
+        
+        // Deduct points for low speed confidence
+        if (waypoint.enhancedSpeed !== undefined) {
+            if (waypoint.enhancedSpeed === 0) qualityScore -= 0.2;
+        }
+        
+        // Bonus for Kalman filtered data
+        if (waypoint.kalmanFiltered) qualityScore += 0.1;
+        
+        return Math.max(0.1, Math.min(1.0, qualityScore));
+    }
+
+    loadAllWaypoints() {
+        try {
+            const data = localStorage.getItem(this.STORAGE_KEYS.WAYPOINTS);
+            if (!data) return [];
+            
+            const waypoints = JSON.parse(data);
+            
+            // Validate loaded data
+            if (!Array.isArray(waypoints)) {
+                console.error('❌ Invalid waypoints data structure, resetting...');
+                this.saveToStorage([]);
+                return [];
+            }
+            
+            return waypoints;
+            
+        } catch (error) {
+            console.error('❌ Failed to load waypoints:', error);
+            // Reset corrupted storage
+            this.saveToStorage([]);
+            return [];
+        }
+    }
+
+    loadUnsyncedWaypoints() {
+        const all = this.loadAllWaypoints();
+        return all.filter(waypoint => !waypoint.synced);
+    }
+
+    loadRecentWaypoints(limit = 100) {
+        const all = this.loadAllWaypoints();
+        return all.slice(-limit).reverse(); // Most recent first
+    }
+
+    markWaypointsAsSynced(waypointIds) {
+        try {
+            const all = this.loadAllWaypoints();
+            let markedCount = 0;
+            
+            const updated = all.map(waypoint => {
+                if (waypointIds.includes(waypoint.id)) {
+                    markedCount++;
+                    return { 
+                        ...waypoint, 
+                        synced: true,
+                        syncedAt: new Date().toISOString(),
+                        syncAttempts: (waypoint.syncAttempts || 0) + 1
+                    };
+                }
+                return waypoint;
+            });
+            
+            this.saveToStorage(updated);
+            
+            this.updateSyncStatus({
+                totalWaypoints: updated.length,
+                unsyncedCount: updated.filter(w => !w.synced).length,
+                lastSync: new Date().toISOString(),
+                lastSyncCount: markedCount
+            });
+            
+            console.log(`✅ Marked ${markedCount} waypoints as synced`);
+            return markedCount;
+            
+        } catch (error) {
+            console.error('❌ Failed to mark waypoints as synced:', error);
+            return 0;
+        }
+    }
+
+    saveToStorage(waypoints) {
+        try {
+            localStorage.setItem(this.STORAGE_KEYS.WAYPOINTS, JSON.stringify(waypoints));
+        } catch (error) {
+            console.error('❌ Error saving to storage:', error);
+            
+            // Handle quota exceeded error
+            if (error.name === 'QuotaExceededError') {
+                console.warn('📦 Storage quota exceeded, performing emergency cleanup...');
+                const reducedWaypoints = this.performEmergencyCleanup(waypoints);
+                localStorage.setItem(this.STORAGE_KEYS.WAYPOINTS, JSON.stringify(reducedWaypoints));
+            }
+        }
+    }
+
+    updateSyncStatus(status) {
+        try {
+            const existing = this.getSyncStatus();
+            const updatedStatus = {
+                ...existing,
+                ...status,
+                updatedAt: new Date().toISOString(),
+                storageHealth: this.checkStorageHealth()
+            };
+            
+            localStorage.setItem(this.STORAGE_KEYS.SYNC_STATUS, JSON.stringify(updatedStatus));
+        } catch (error) {
+            console.error('❌ Error updating sync status:', error);
+        }
+    }
+
+    getSyncStatus() {
+        try {
+            const data = localStorage.getItem(this.STORAGE_KEYS.SYNC_STATUS);
+            const defaultStatus = {
+                totalWaypoints: 0,
+                unsyncedCount: 0,
+                lastSync: null,
+                lastSave: null,
+                firstSave: new Date().toISOString(),
+                updatedAt: new Date().toISOString(),
+                storageHealth: 'unknown'
+            };
+            
+            return data ? JSON.parse(data) : defaultStatus;
+        } catch (error) {
+            console.error('❌ Error getting sync status:', error);
+            return {
+                totalWaypoints: 0,
+                unsyncedCount: 0,
+                lastSync: null,
+                lastSave: null,
+                firstSave: new Date().toISOString(),
+                updatedAt: new Date().toISOString(),
+                storageHealth: 'error'
+            };
+        }
+    }
+
+    checkStorageHealth() {
+        try {
+            const waypoints = this.loadAllWaypoints();
+            const compressed = this.loadCompressedData();
+            const archived = this.loadArchivedData();
+            
+            const totalPoints = waypoints.length + 
+                               compressed.reduce((sum, batch) => sum + batch.compressedCount, 0) +
+                               archived.reduce((sum, archive) => sum + archive.count, 0);
+            
+            const usagePercentage = (totalPoints / this.QUOTA_LIMITS.MAX_WAYPOINTS) * 100;
+            
+            if (usagePercentage >= 95) return 'critical';
+            if (usagePercentage >= 80) return 'warning';
+            if (usagePercentage >= 50) return 'normal';
+            return 'healthy';
+        } catch (error) {
+            return 'error';
+        }
+    }
+
+    updateStorageMetadata(metadata) {
+        try {
+            const existing = this.getStorageMetadata();
+            const updated = {
+                ...existing,
+                ...metadata,
+                updatedAt: new Date().toISOString()
+            };
+            
+            localStorage.setItem(this.STORAGE_KEYS.STORAGE_METADATA, JSON.stringify(updated));
+        } catch (error) {
+            console.error('❌ Error updating storage metadata:', error);
+        }
+    }
+
+    getStorageMetadata() {
+        try {
+            const data = localStorage.getItem(this.STORAGE_KEYS.STORAGE_METADATA);
+            return data ? JSON.parse(data) : {
+                totalStored: 0,
+                compressedCount: 0,
+                archivedCount: 0,
+                compressionRatio: 1.0,
+                lastMaintenance: new Date().toISOString(),
+                storageVersion: '2.0',
+                createdAt: new Date().toISOString()
+            };
+        } catch (error) {
+            console.error('❌ Error getting storage metadata:', error);
+            return {};
+        }
+    }
+
+    loadCompressedData() {
+        try {
+            const data = localStorage.getItem(this.STORAGE_KEYS.COMPRESSED_DATA);
+            return data ? JSON.parse(data) : [];
+        } catch (error) {
+            console.error('❌ Error loading compressed data:', error);
+            return [];
+        }
+    }
+
+    loadArchivedData() {
+        try {
+            const data = localStorage.getItem(this.STORAGE_KEYS.ARCHIVED_DATA);
+            return data ? JSON.parse(data) : [];
+        } catch (error) {
+            console.error('❌ Error loading archived data:', error);
+            return [];
+        }
+    }
+
+    getEnhancedStorageStatistics() {
+        const waypoints = this.loadAllWaypoints();
+        const compressed = this.loadCompressedData();
+        const archived = this.loadArchivedData();
+        const metadata = this.getStorageMetadata();
+        
+        const totalPoints = waypoints.length + 
+                           compressed.reduce((sum, batch) => sum + batch.compressedCount, 0) +
+                           archived.reduce((sum, archive) => sum + archive.count, 0);
+
+        return {
+            capacity: {
+                maxWaypoints: this.QUOTA_LIMITS.MAX_WAYPOINTS,
+                currentUsage: totalPoints,
+                usagePercentage: ((totalPoints / this.QUOTA_LIMITS.MAX_WAYPOINTS) * 100).toFixed(1) + '%',
+                health: this.checkStorageHealth()
+            },
+            breakdown: {
+                active: waypoints.length,
+                compressed: compressed.reduce((sum, batch) => sum + batch.compressedCount, 0),
+                archived: archived.reduce((sum, archive) => sum + archive.count, 0),
+                total: totalPoints
+            },
+            compression: {
+                enabled: this.compressionEnabled,
+                batches: compressed.length,
+                averageRatio: metadata.compressionRatio || 1.0
+            },
+            archiving: {
+                enabled: this.autoArchiveEnabled,
+                archives: archived.length
+            },
+            syncStatus: this.getSyncStatus(),
+            metadata: metadata
+        };
+    }
+
+    // === IMPLEMENTASI LENGKAP DARI METHOD-METHOD YANG ADA DI KODE LAMA ===
+
+    saveSystemState(systemState) {
+        try {
+            const stateToSave = {
+                ...systemState,
+                savedAt: new Date().toISOString(),
+                version: '2.0',
+                checksum: this.generateChecksum(systemState)
+            };
+            
+            localStorage.setItem(this.STORAGE_KEYS.SYSTEM_STATE, JSON.stringify(stateToSave));
+            console.log('✅ System state saved successfully');
+            return true;
+        } catch (error) {
+            console.error('❌ Failed to save system state:', error);
+            return false;
+        }
+    }
+
+    loadSystemState() {
+        try {
+            const savedState = localStorage.getItem(this.STORAGE_KEYS.SYSTEM_STATE);
+            if (!savedState) return null;
+            
+            const state = JSON.parse(savedState);
+            
+            // Validate checksum
+            if (!this.validateChecksum(state)) {
+                console.warn('⚠️ System state checksum validation failed');
+                return null;
+            }
+            
+            console.log('✅ System state loaded successfully');
+            return state;
+        } catch (error) {
+            console.error('❌ Failed to load system state:', error);
+            return null;
+        }
+    }
+
+    saveAppSettings(settings) {
+        try {
+            const settingsToSave = {
+                ...settings,
+                lastModified: new Date().toISOString(),
+                version: '1.0'
+            };
+            
+            localStorage.setItem(this.STORAGE_KEYS.APP_SETTINGS, JSON.stringify(settingsToSave));
+            console.log('✅ App settings saved successfully');
+            return true;
+        } catch (error) {
+            console.error('❌ Failed to save app settings:', error);
+            return false;
+        }
+    }
+
+    loadAppSettings() {
+        try {
+            const savedSettings = localStorage.getItem(this.STORAGE_KEYS.APP_SETTINGS);
+            return savedSettings ? JSON.parse(savedSettings) : {
+                gpsInterval: 1000,
+                enableKalmanFilter: true,
+                enableSpeedSmoothing: true,
+                autoSync: true,
+                offlineStorage: true,
+                theme: 'dark',
+                language: 'id-ID',
+                units: 'metric'
+            };
+        } catch (error) {
+            console.error('❌ Failed to load app settings:', error);
+            return {};
+        }
+    }
+
+    saveDriverProfile(profile) {
+        try {
+            const profiles = this.loadDriverProfiles();
+            const existingIndex = profiles.findIndex(p => p.driverId === profile.driverId);
+            
+            if (existingIndex >= 0) {
+                profiles[existingIndex] = {
+                    ...profiles[existingIndex],
+                    ...profile,
+                    updatedAt: new Date().toISOString()
+                };
+            } else {
+                profiles.push({
+                    ...profile,
+                    createdAt: new Date().toISOString(),
+                    profileId: `driver_${Date.now()}`
+                });
+            }
+            
+            localStorage.setItem(this.STORAGE_KEYS.DRIVER_PROFILES, JSON.stringify(profiles));
+            console.log('✅ Driver profile saved successfully');
+            return true;
+        } catch (error) {
+            console.error('❌ Failed to save driver profile:', error);
+            return false;
+        }
+    }
+
+    loadDriverProfiles() {
+        try {
+            const profiles = localStorage.getItem(this.STORAGE_KEYS.DRIVER_PROFILES);
+            return profiles ? JSON.parse(profiles) : [];
+        } catch (error) {
+            console.error('❌ Failed to load driver profiles:', error);
+            return [];
+        }
+    }
+
+    saveVehicleProfile(profile) {
+        try {
+            const profiles = this.loadVehicleProfiles();
+            const existingIndex = profiles.findIndex(p => p.vehicleId === profile.vehicleId);
+            
+            if (existingIndex >= 0) {
+                profiles[existingIndex] = {
+                    ...profiles[existingIndex],
+                    ...profile,
+                    updatedAt: new Date().toISOString()
+                };
+            } else {
+                profiles.push({
+                    ...profile,
+                    createdAt: new Date().toISOString(),
+                    profileId: `vehicle_${Date.now()}`
+                });
+            }
+            
+            localStorage.setItem(this.STORAGE_KEYS.VEHICLE_PROFILES, JSON.stringify(profiles));
+            console.log('✅ Vehicle profile saved successfully');
+            return true;
+        } catch (error) {
+            console.error('❌ Failed to save vehicle profile:', error);
+            return false;
+        }
+    }
+
+    loadVehicleProfiles() {
+        try {
+            const profiles = localStorage.getItem(this.STORAGE_KEYS.VEHICLE_PROFILES);
+            return profiles ? JSON.parse(profiles) : [];
+        } catch (error) {
+            console.error('❌ Failed to load vehicle profiles:', error);
+            return [];
+        }
+    }
+
+    saveSessionData(sessionData) {
+        try {
+            const sessions = this.loadSessionData();
+            const existingIndex = sessions.findIndex(s => s.sessionId === sessionData.sessionId);
+            
+            if (existingIndex >= 0) {
+                sessions[existingIndex] = {
+                    ...sessions[existingIndex],
+                    ...sessionData,
+                    updatedAt: new Date().toISOString()
+                };
+            } else {
+                sessions.push({
+                    ...sessionData,
+                    createdAt: new Date().toISOString()
+                });
+            }
+            
+            localStorage.setItem(this.STORAGE_KEYS.SESSION_DATA, JSON.stringify(sessions));
+            console.log('✅ Session data saved successfully');
+            return true;
+        } catch (error) {
+            console.error('❌ Failed to save session data:', error);
+            return false;
+        }
+    }
+
+    loadSessionData() {
+        try {
+            const sessions = localStorage.getItem(this.STORAGE_KEYS.SESSION_DATA);
+            return sessions ? JSON.parse(sessions) : [];
+        } catch (error) {
+            console.error('❌ Failed to load session data:', error);
+            return [];
+        }
+    }
+
+    generateChecksum(data) {
+        // Simple checksum generation for data validation
+        const str = JSON.stringify(data);
+        let checksum = 0;
+        for (let i = 0; i < str.length; i++) {
+            checksum = (checksum + str.charCodeAt(i)) % 256;
+        }
+        return checksum.toString(16);
+    }
+
+    validateChecksum(data) {
+        if (!data.checksum) return false;
+        const originalChecksum = data.checksum;
+        const { checksum, ...dataWithoutChecksum } = data;
+        const calculatedChecksum = this.generateChecksum(dataWithoutChecksum);
+        return originalChecksum === calculatedChecksum;
+    }
+
+    performStorageMaintenance() {
+        console.log('🔧 Performing storage maintenance...');
+        
+        try {
+            // Clean up old compressed data
+            const compressed = this.loadCompressedData();
+            const now = new Date();
+            const compressedThreshold = new Date(now.getTime() - (30 * 24 * 60 * 60 * 1000)); // 30 days ago
+            
+            const filteredCompressed = compressed.filter(batch => {
+                const batchDate = new Date(batch.compressedAt);
+                return batchDate >= compressedThreshold;
+            });
+            
+            if (filteredCompressed.length < compressed.length) {
+                localStorage.setItem(this.STORAGE_KEYS.COMPRESSED_DATA, JSON.stringify(filteredCompressed));
+                console.log(`🧹 Cleaned up ${compressed.length - filteredCompressed.length} old compressed batches`);
+            }
+            
+            // Update metadata
+            this.updateStorageMetadata({
+                lastMaintenance: new Date().toISOString(),
+                maintenanceCount: (this.getStorageMetadata().maintenanceCount || 0) + 1
+            });
+            
+            console.log('✅ Storage maintenance completed');
+            return true;
+            
+        } catch (error) {
+            console.error('❌ Storage maintenance failed:', error);
+            return false;
+        }
+    }
+
+    clearAllData() {
+        try {
+            // Clear all storage keys
+            Object.values(this.STORAGE_KEYS).forEach(key => {
+                localStorage.removeItem(key);
+            });
+            
+            // Reinitialize storage structure
+            this.ensureStorageStructure();
+            
+            console.log('🗑️ All storage data cleared and reinitialized');
+            return true;
+            
+        } catch (error) {
+            console.error('❌ Failed to clear storage data:', error);
+            return false;
+        }
+    }
+
+    getStorageUsage() {
+        let totalSize = 0;
+        
+        Object.values(this.STORAGE_KEYS).forEach(key => {
+            const data = localStorage.getItem(key);
+            if (data) {
+                totalSize += new Blob([data]).size;
+            }
+        });
+        
+        return {
+            totalBytes: totalSize,
+            totalKB: (totalSize / 1024).toFixed(2),
+            totalMB: (totalSize / (1024 * 1024)).toFixed(2)
+        };
+    }
+
+    exportData() {
+        try {
+            const exportData = {};
+            
+            Object.entries(this.STORAGE_KEYS).forEach(([key, storageKey]) => {
+                const data = localStorage.getItem(storageKey);
+                if (data) {
+                    exportData[key] = JSON.parse(data);
+                }
+            });
+            
+            const exportBlob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(exportBlob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `gps_tracker_backup_${new Date().toISOString().split('T')[0]}.json`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            
+            console.log('📤 Data exported successfully');
+            return true;
+            
+        } catch (error) {
+            console.error('❌ Data export failed:', error);
+            return false;
+        }
+    }
+
+    importData(file) {
+        return new Promise((resolve, reject) => {
+            try {
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    try {
+                        const importData = JSON.parse(e.target.result);
+                        
+                        Object.entries(this.STORAGE_KEYS).forEach(([key, storageKey]) => {
+                            if (importData[key]) {
+                                localStorage.setItem(storageKey, JSON.stringify(importData[key]));
+                            }
+                        });
+                        
+                        console.log('📥 Data imported successfully');
+                        resolve(true);
+                        
+                    } catch (parseError) {
+                        console.error('❌ Failed to parse import file:', parseError);
+                        reject(parseError);
+                    }
+                };
+                reader.onerror = () => reject(new Error('Failed to read file'));
+                reader.readAsText(file);
+                
+            } catch (error) {
+                console.error('❌ Data import failed:', error);
+                reject(error);
+            }
+        });
+    }
+}
+
+// ===== INTELLIGENT SYNC MANAGER =====
+class IntelligentSyncManager {
+    constructor() {
+        this.syncStrategies = {
+            '4g': {
+                name: '4G_FULL_SYNC',
+                batchSize: 100,
+                concurrency: 3,
+                timeout: 30000,
+                retryAttempts: 2,
+                compression: false
+            },
+            '3g': {
+                name: '3G_OPTIMIZED_SYNC',
+                batchSize: 50,
+                concurrency: 2,
+                timeout: 45000,
+                retryAttempts: 3,
+                compression: true
+            },
+            '2g': {
+                name: '2G_ESSENTIAL_SYNC',
+                batchSize: 20,
+                concurrency: 1,
+                timeout: 60000,
+                retryAttempts: 5,
+                compression: true
+            },
+            'slow-2g': {
+                name: 'SLOW_2G_CRITICAL_SYNC',
+                batchSize: 10,
+                concurrency: 1,
+                timeout: 90000,
+                retryAttempts: 8,
+                compression: true
+            },
+            'offline': {
+                name: 'OFFLINE_QUEUE_ONLY',
+                batchSize: 0,
+                concurrency: 0,
+                timeout: 0,
+                retryAttempts: 0,
+                compression: false
+            }
+        };
+
+        this.currentStrategy = null;
+        this.networkInfo = {
+            effectiveType: '4g',
+            downlink: 10,
+            rtt: 50,
+            saveData: false
+        };
+
+        this.syncHistory = [];
+        this.performanceMetrics = {
+            totalSyncs: 0,
+            successfulSyncs: 0,
+            failedSyncs: 0,
+            totalDataSent: 0,
+            averageSyncTime: 0
+        };
+        this.syncListeners = [];
+
+        this.init();
+    }
+
+    init() {
+        this.detectNetworkCapabilities();
+        this.setupNetworkListeners();
+        this.startNetworkMonitor();
+    }
+
+    detectNetworkCapabilities() {
+        if (navigator.connection) {
+            const connection = navigator.connection;
+            this.networkInfo = {
+                effectiveType: connection.effectiveType || '4g',
+                downlink: connection.downlink || 10,
+                rtt: connection.rtt || 50,
+                saveData: connection.saveData || false
+            };
+        } else {
+            // Fallback detection
+            this.networkInfo.effectiveType = this.estimateNetworkType();
+        }
+
+        this.currentStrategy = this.selectSyncStrategy();
+        console.log(`📶 Network detected: ${this.networkInfo.effectiveType}, using strategy: ${this.currentStrategy.name}`);
+    }
+
+    estimateNetworkType() {
+        // Simple network type estimation based on navigator properties
+        if (navigator.onLine) {
+            // Check for WiFi (crude detection)
+            const isWifi = navigator.connection ? 
+                navigator.connection.downlink > 5 : 
+                window.performance && performance.memory; // Rough proxy
+            
+            return isWifi ? '4g' : '3g';
+        }
+        return 'offline';
+    }
+
+    selectSyncStrategy() {
+        const { effectiveType, downlink, rtt, saveData } = this.networkInfo;
+
+        if (!navigator.onLine) {
+            return this.syncStrategies.offline;
+        }
+
+        if (saveData) {
+            // Data saver mode - use most conservative strategy
+            return this.syncStrategies['slow-2g'];
+        }
+
+        // Select strategy based on network type and quality
+        switch (effectiveType) {
+            case '4g':
+                if (downlink > 10 && rtt < 100) {
+                    return this.syncStrategies['4g'];
+                } else {
+                    return this.syncStrategies['3g']; // Degraded 4g
+                }
+            case '3g':
+                if (downlink > 5 && rtt < 200) {
+                    return this.syncStrategies['3g'];
+                } else {
+                    return this.syncStrategies['2g']; // Poor 3g
+                }
+            case '2g':
+                return this.syncStrategies['2g'];
+            case 'slow-2g':
+                return this.syncStrategies['slow-2g'];
+            default:
+                return this.syncStrategies['3g']; // Default fallback
+        }
+    }
+
+    setupNetworkListeners() {
+        if (navigator.connection) {
+            navigator.connection.addEventListener('change', () => {
+                this.handleNetworkChange();
+            });
+        }
+
+        window.addEventListener('online', () => {
+            this.handleNetworkChange();
+            this.triggerSmartSync();
+        });
+
+        window.addEventListener('offline', () => {
+            this.handleNetworkChange();
+        });
+    }
+
+    startNetworkMonitor() {
+        // Monitor network quality every 30 seconds
+        setInterval(() => {
+            this.checkNetworkQuality();
+        }, 30000);
+    }
+
+    handleNetworkChange() {
+        const previousStrategy = this.currentStrategy?.name;
+        this.detectNetworkCapabilities();
+        
+        if (previousStrategy !== this.currentStrategy.name) {
+            console.log(`🔄 Network strategy changed: ${previousStrategy} → ${this.currentStrategy.name}`);
+            
+            // Trigger sync if network improved
+            if (this.isNetworkImproved(previousStrategy, this.currentStrategy.name)) {
+                this.triggerSmartSync();
+            }
+        }
+    }
+
+    isNetworkImproved(oldStrategy, newStrategy) {
+        const strategyOrder = ['offline', 'slow-2g', '2g', '3g', '4g'];
+        const oldIndex = strategyOrder.findIndex(s => oldStrategy.includes(s));
+        const newIndex = strategyOrder.findIndex(s => newStrategy.includes(s));
+        
+        return newIndex > oldIndex;
+    }
+
+    async triggerSmartSync() {
+        if (!navigator.onLine) {
+            console.log('📴 Offline - skipping sync');
+            return;
+        }
+
+        const strategy = this.currentStrategy;
+        
+        try {
+            console.log(`🚀 Starting smart sync with strategy: ${strategy.name}`);
+            
+            const startTime = Date.now();
+            
+            // Execute sync based on strategy
+            switch (strategy.name) {
+                case '4G_FULL_SYNC':
+                    await this.executeFullSync(strategy);
+                    break;
+                case '3G_OPTIMIZED_SYNC':
+                    await this.executeOptimizedSync(strategy);
+                    break;
+                case '2G_ESSENTIAL_SYNC':
+                    await this.executeEssentialSync(strategy);
+                    break;
+                case 'SLOW_2G_CRITICAL_SYNC':
+                    await this.executeCriticalSync(strategy);
+                    break;
+                default:
+                    await this.executeOptimizedSync(strategy);
+            }
+
+            const syncTime = Date.now() - startTime;
+            this.recordSyncSuccess(syncTime);
+            
+            // Notify listeners
+            this.notifySyncListeners({
+                type: 'success',
+                strategy: strategy.name,
+                duration: syncTime
+            });
+            
+        } catch (error) {
+            console.error('❌ Smart sync failed:', error);
+            this.recordSyncFailure(error);
+            
+            // Notify listeners
+            this.notifySyncListeners({
+                type: 'error',
+                strategy: strategy.name,
+                error: error.message
+            });
+        }
+    }
+
+    async executeFullSync(strategy) {
+        console.log('🔄 Executing FULL sync (4G mode)');
+        
+        // Sync everything with high concurrency
+        await Promise.all([
+            this.syncWaypoints(strategy),
+            this.syncRealTimeData(strategy),
+            this.syncChatMessages(strategy),
+            this.syncSystemState(strategy)
+        ]);
+
+        // Additional non-critical syncs
+        await this.syncAnalyticsData(strategy);
+    }
+
+    async executeOptimizedSync(strategy) {
+        console.log('🔄 Executing OPTIMIZED sync (3G mode)');
+        
+        // Priority-based sync
+        await this.syncRealTimeData(strategy); // Highest priority
+        await this.syncWaypoints(strategy);    // High priority
+        await this.syncChatMessages(strategy); // Medium priority
+        
+        // Skip non-critical data
+    }
+
+    async executeEssentialSync(strategy) {
+        console.log('🔄 Executing ESSENTIAL sync (2G mode)');
+        
+        // Only essential data
+        await this.syncRealTimeData(strategy);
+        await this.syncWaypoints(strategy, true); // Compressed waypoints only
+    }
+
+    async executeCriticalSync(strategy) {
+        console.log('🔄 Executing CRITICAL sync (Slow 2G mode)');
+        
+        // Only most critical data with compression
+        await this.syncRealTimeData(strategy, true); // Ultra-compressed
+        // Waypoints are queued but not sent in this mode
+    }
+
+    async syncWaypoints(strategy, compressedOnly = false) {
+        const unsyncedWaypoints = window.dtLogger?.storageManager?.loadUnsyncedWaypoints() || [];
+        
+        if (unsyncedWaypoints.length === 0) {
+            console.log('✅ No waypoints to sync');
+            return;
+        }
+
+        console.log(`📤 Syncing ${unsyncedWaypoints.length} waypoints...`);
+
+        if (compressedOnly && unsyncedWaypoints.length > strategy.batchSize) {
+            // Compress waypoints before sending
+            const compressed = this.compressWaypoints(unsyncedWaypoints);
+            await this.uploadCompressedWaypoints(compressed, strategy);
+        } else {
+            // Send in batches
+            const batches = this.createBatches(unsyncedWaypoints, strategy.batchSize);
+            await this.uploadBatches(batches, strategy);
+        }
+    }
+
+    async syncRealTimeData(strategy, compressed = false) {
+        if (!window.dtLogger?.firebaseRef) return;
+
+        const realTimeData = window.dtLogger.getRealTimeData();
+        
+        if (compressed) {
+            // Send minimal real-time data
+            const minimalData = {
+                lat: realTimeData.lat,
+                lng: realTimeData.lng,
+                sp: realTimeData.speed, // compressed key
+                t: new Date().toISOString()
+            };
+            await window.dtLogger.firebaseRef.set(minimalData);
+        } else {
+            await window.dtLogger.firebaseRef.set(realTimeData);
+        }
+    }
+
+    compressWaypoints(waypoints) {
+        // Simple compression for waypoints
+        return waypoints.map(wp => ({
+            i: wp.id,
+            la: wp.lat,
+            ln: wp.lng,
+            t: wp.timestamp,
+            s: wp.speed,
+            a: wp.accuracy
+        }));
+    }
+
+    async uploadBatches(batches, strategy) {
+        const uploadPromises = [];
+        
+        for (let i = 0; i < Math.min(batches.length, strategy.concurrency); i++) {
+            uploadPromises.push(this.uploadBatchWithRetry(batches[i], i, strategy));
+        }
+
+        await Promise.all(uploadPromises);
+    }
+
+    async uploadBatchWithRetry(batch, batchIndex, strategy) {
+        const retryManager = window.dtLogger?.retryManager;
+        
+        if (retryManager) {
+            return retryManager.scheduleRetry(
+                { batch, batchIndex },
+                this.getRetryPriority(strategy),
+                {
+                    type: 'waypoint_upload',
+                    operation: async (data) => {
+                        await this.uploadBatch(data.batch, data.batchIndex, strategy);
+                    }
+                }
+            );
+        } else {
+            // Fallback to direct upload
+            return this.uploadBatch(batch, batchIndex, strategy);
+        }
+    }
+
+    getRetryPriority(strategy) {
+        switch (strategy.name) {
+            case '4G_FULL_SYNC': return 'normal';
+            case '3G_OPTIMIZED_SYNC': return 'high';
+            case '2G_ESSENTIAL_SYNC': return 'high';
+            case 'SLOW_2G_CRITICAL_SYNC': return 'critical';
+            default: return 'normal';
+        }
+    }
+
+    checkNetworkQuality() {
+        // Implement network quality checks
+        if (navigator.connection) {
+            const connection = navigator.connection;
+            
+            // Check if network quality has degraded
+            if (connection.rtt > 1000 || connection.downlink < 0.5) {
+                console.warn('📶 Network quality degraded');
+                this.handleNetworkChange();
+            }
+        }
+    }
+
+    recordSyncSuccess(syncTime) {
+        this.performanceMetrics.totalSyncs++;
+        this.performanceMetrics.successfulSyncs++;
+        this.performanceMetrics.averageSyncTime = 
+            (this.performanceMetrics.averageSyncTime * (this.performanceMetrics.totalSyncs - 1) + syncTime) / 
+            this.performanceMetrics.totalSyncs;
+
+        this.syncHistory.push({
+            timestamp: new Date().toISOString(),
+            strategy: this.currentStrategy.name,
+            duration: syncTime,
+            status: 'success',
+            networkType: this.networkInfo.effectiveType
+        });
+
+        // Keep only last 100 sync records
+        if (this.syncHistory.length > 100) {
+            this.syncHistory.shift();
+        }
+    }
+
+    recordSyncFailure(error) {
+        this.performanceMetrics.totalSyncs++;
+        this.performanceMetrics.failedSyncs++;
+
+        this.syncHistory.push({
+            timestamp: new Date().toISOString(),
+            strategy: this.currentStrategy.name,
+            error: error.message,
+            status: 'failed',
+            networkType: this.networkInfo.effectiveType
+        });
+    }
+
+    addSyncListener(callback) {
+        this.syncListeners.push(callback);
+    }
+
+    notifySyncListeners(result) {
+        this.syncListeners.forEach(callback => {
+            try {
+                callback(result);
+            } catch (error) {
+                console.error('Error in sync listener:', error);
+            }
+        });
+    }
+
+    getSyncAnalytics() {
+        return {
+            performance: this.performanceMetrics,
+            currentStrategy: this.currentStrategy,
+            networkInfo: this.networkInfo,
+            recentSyncs: this.syncHistory.slice(-10),
+            successRate: this.performanceMetrics.totalSyncs > 0 ? 
+                (this.performanceMetrics.successfulSyncs / this.performanceMetrics.totalSyncs * 100).toFixed(1) + '%' : '0%'
+        };
+    }
+
+    createBatches(array, batchSize) {
+        const batches = [];
+        for (let i = 0; i < array.length; i += batchSize) {
+            batches.push(array.slice(i, i + batchSize));
+        }
+        return batches;
+    }
+
+    // === IMPLEMENTASI LENGKAP DARI METHOD-METHOD YANG ADA DI KODE LAMA ===
+
+    async syncChatMessages(strategy) {
+        if (!window.dtLogger?.chatRef) {
+            console.log('💬 Chat not initialized, skipping chat sync');
+            return;
+        }
+
+        try {
+            const unsyncedMessages = window.dtLogger.chatMessages.filter(msg => !msg.synced);
+            if (unsyncedMessages.length === 0) {
+                console.log('✅ No chat messages to sync');
+                return;
+            }
+
+            console.log(`💬 Syncing ${unsyncedMessages.length} chat messages...`);
+            
+            for (const message of unsyncedMessages) {
+                await window.dtLogger.chatRef.push().set({
+                    ...message,
+                    synced: true,
+                    syncedAt: new Date().toISOString()
+                });
+                
+                message.synced = true;
+                message.syncedAt = new Date().toISOString();
+            }
+            
+            console.log('✅ Chat messages synced successfully');
+            
+        } catch (error) {
+            console.error('❌ Chat sync failed:', error);
+            throw error;
+        }
+    }
+
+    async syncSystemState(strategy) {
+        try {
+            const systemState = window.dtLogger.getSystemState();
+            if (!systemState) {
+                console.log('💾 No system state to sync');
+                return;
+            }
+
+            console.log('💾 Syncing system state...');
+            
+            const systemRef = database.ref('/system/' + window.dtLogger.driverData.unit);
+            await systemRef.set({
+                ...systemState,
+                lastSync: new Date().toISOString(),
+                syncStrategy: strategy.name
+            });
+            
+            console.log('✅ System state synced successfully');
+            
+        } catch (error) {
+            console.error('❌ System state sync failed:', error);
+            throw error;
+        }
+    }
+
+    async syncAnalyticsData(strategy) {
+        try {
+            const analyticsData = window.dtLogger.getAnalyticsData();
+            if (!analyticsData || Object.keys(analyticsData).length === 0) {
+                console.log('📊 No analytics data to sync');
+                return;
+            }
+
+            console.log('📊 Syncing analytics data...');
+            
+            const analyticsRef = database.ref('/analytics/' + window.dtLogger.driverData.unit);
+            await analyticsRef.set({
+                ...analyticsData,
+                syncedAt: new Date().toISOString(),
+                syncStrategy: strategy.name
+            });
+            
+            console.log('✅ Analytics data synced successfully');
+            
+        } catch (error) {
+            console.error('❌ Analytics sync failed:', error);
+            // Don't throw error for analytics - it's non-critical
+        }
+    }
+
+    async uploadBatch(batch, batchIndex, strategy) {
+        const batchId = `batch_${Date.now()}_${batchIndex}`;
+        const batchRef = database.ref(`/waypoints/${window.dtLogger?.driverData?.unit}/batches/${batchId}`);
+        
+        const batchData = {
+            batchId: batchId,
+            unit: window.dtLogger?.driverData?.unit,
+            sessionId: window.dtLogger?.driverData?.sessionId,
+            driver: window.dtLogger?.driverData?.name,
+            waypoints: batch,
+            uploadedAt: new Date().toISOString(),
+            batchSize: batch.length,
+            batchIndex: batchIndex,
+            syncStrategy: strategy.name
+        };
+
+        await batchRef.set(batchData);
+        console.log(`✅ Batch ${batchIndex} uploaded successfully (${batch.length} waypoints)`);
+    }
+
+    async uploadCompressedWaypoints(compressed, strategy) {
+        const batchId = `compressed_${Date.now()}`;
+        const batchRef = database.ref(`/waypoints/${window.dtLogger?.driverData?.unit}/compressed/${batchId}`);
+        
+        const batchData = {
+            batchId: batchId,
+            unit: window.dtLogger?.driverData?.unit,
+            sessionId: window.dtLogger?.driverData?.sessionId,
+            driver: window.dtLogger?.driverData?.name,
+            compressedWaypoints: compressed,
+            originalCount: compressed.length,
+            uploadedAt: new Date().toISOString(),
+            compressionRatio: 'high',
+            syncStrategy: strategy.name
+        };
+
+        await batchRef.set(batchData);
+        console.log(`✅ Compressed batch uploaded successfully (${compressed.length} waypoints)`);
+    }
+
+    forceSync() {
+        console.log('🚀 Manual force sync triggered');
+        this.triggerSmartSync();
+    }
+
+    getSyncStatus() {
+        return {
+            isOnline: navigator.onLine,
+            currentStrategy: this.currentStrategy,
+            networkInfo: this.networkInfo,
+            performance: this.performanceMetrics,
+            lastSync: this.syncHistory.length > 0 ? this.syncHistory[this.syncHistory.length - 1] : null
+        };
+    }
+
+    resetStats() {
+        this.performanceMetrics = {
+            totalSyncs: 0,
+            successfulSyncs: 0,
+            failedSyncs: 0,
+            totalDataSent: 0,
+            averageSyncTime: 0
+        };
+        this.syncHistory = [];
+        console.log('🔄 Sync statistics reset');
+    }
+}
+
 // ===== CIRCULAR BUFFER FOR WAYPOINT MANAGEMENT =====
 class CircularBuffer {
     constructor(capacity) {
@@ -686,546 +2567,6 @@ class CircularBuffer {
 
     filterWaypoints(predicate) {
         return this.getAll().filter(predicate);
-    }
-}
-
-// ===== ENHANCED STORAGE MANAGER =====
-class EnhancedStorageManager {
-    constructor() {
-        this.STORAGE_KEYS = {
-            WAYPOINTS: 'enhanced_gps_waypoints',
-            SYNC_STATUS: 'enhanced_sync_status',
-            SESSION_DATA: 'enhanced_session_data',
-            DRIVER_PROFILES: 'driver_profiles',
-            VEHICLE_PROFILES: 'vehicle_profiles',
-            SYSTEM_STATE: 'system_state_backup',
-            APP_SETTINGS: 'app_settings',
-            MAINTENANCE_RECORDS: 'maintenance_records',
-            NOTIFICATIONS: 'system_notifications'
-        };
-        
-        this.QUOTA_LIMITS = {
-            MAX_WAYPOINTS: 61200,
-            WARNING_THRESHOLD: 50000,
-            CLEANUP_PERCENTAGE: 0.1 // Clean 10% when full
-        };
-        
-        this.init();
-    }
-
-    init() {
-        // Initialize storage with default values if needed
-        this.ensureStorageStructure();
-    }
-
-    ensureStorageStructure() {
-        try {
-            // Initialize waypoints array if not exists
-            if (!localStorage.getItem(this.STORAGE_KEYS.WAYPOINTS)) {
-                localStorage.setItem(this.STORAGE_KEYS.WAYPOINTS, JSON.stringify([]));
-            }
-
-            // Initialize sync status if not exists
-            if (!localStorage.getItem(this.STORAGE_KEYS.SYNC_STATUS)) {
-                this.updateSyncStatus({
-                    totalWaypoints: 0,
-                    unsyncedCount: 0,
-                    lastSync: null,
-                    lastSave: new Date().toISOString(),
-                    firstSave: new Date().toISOString()
-                });
-            }
-
-            console.log('✅ Storage structure initialized');
-        } catch (error) {
-            console.error('❌ Error initializing storage structure:', error);
-        }
-    }
-
-    saveWaypoint(waypoint) {
-        try {
-            if (!waypoint || !waypoint.id) {
-                throw new Error('Invalid waypoint data');
-            }
-
-            const existing = this.loadAllWaypoints();
-            const existingIndex = existing.findIndex(wp => wp.id === waypoint.id);
-            
-            if (existingIndex >= 0) {
-                // Update existing waypoint
-                existing[existingIndex] = {
-                    ...existing[existingIndex],
-                    ...waypoint,
-                    updatedAt: new Date().toISOString()
-                };
-            } else {
-                // Add new waypoint with metadata
-                const enhancedWaypoint = {
-                    ...waypoint,
-                    createdAt: new Date().toISOString(),
-                    storageVersion: '1.0',
-                    dataQuality: this.assessDataQuality(waypoint)
-                };
-                existing.push(enhancedWaypoint);
-            }
-
-            // Check storage limits and cleanup if needed
-            if (existing.length >= this.QUOTA_LIMITS.MAX_WAYPOINTS) {
-                console.warn(`📦 Storage near capacity (${existing.length}/${this.QUOTA_LIMITS.MAX_WAYPOINTS}), performing cleanup...`);
-                this.performStorageCleanup(existing);
-            } else if (existing.length >= this.QUOTA_LIMITS.WARNING_THRESHOLD) {
-                console.warn(`⚠️ Storage approaching limit: ${existing.length}/${this.QUOTA_LIMITS.MAX_WAYPOINTS}`);
-            }
-
-            this.saveToStorage(existing);
-            
-            this.updateSyncStatus({
-                totalWaypoints: existing.length,
-                unsyncedCount: existing.filter(w => !w.synced).length,
-                lastSave: new Date().toISOString()
-            });
-
-            return true;
-            
-        } catch (error) {
-            console.error('❌ Failed to save waypoint:', error);
-            return false;
-        }
-    }
-
-    assessDataQuality(waypoint) {
-        let qualityScore = 1.0;
-        
-        // Deduct points for poor accuracy
-        if (waypoint.accuracy > 50) qualityScore -= 0.3;
-        else if (waypoint.accuracy > 25) qualityScore -= 0.1;
-        
-        // Deduct points for low speed confidence
-        if (waypoint.enhancedSpeed !== undefined) {
-            if (waypoint.enhancedSpeed === 0) qualityScore -= 0.2;
-        }
-        
-        // Bonus for Kalman filtered data
-        if (waypoint.kalmanFiltered) qualityScore += 0.1;
-        
-        return Math.max(0.1, Math.min(1.0, qualityScore));
-    }
-
-    performStorageCleanup(waypoints) {
-        const itemsToRemove = Math.floor(waypoints.length * this.QUOTA_LIMITS.CLEANUP_PERCENTAGE);
-        
-        // Remove oldest waypoints first, but keep unsynced ones
-        const syncedWaypoints = waypoints.filter(wp => wp.synced);
-        const unsyncedWaypoints = waypoints.filter(wp => !wp.synced);
-        
-        // Sort synced waypoints by creation date (oldest first)
-        syncedWaypoints.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
-        
-        // Remove oldest synced waypoints
-        const remainingSynced = syncedWaypoints.slice(itemsToRemove);
-        
-        // Combine back with unsynced waypoints
-        const cleanedWaypoints = [...remainingSynced, ...unsyncedWaypoints];
-        
-        console.log(`🧹 Storage cleanup: Removed ${itemsToRemove} old waypoints, ${cleanedWaypoints.length} remaining`);
-        
-        return cleanedWaypoints;
-    }
-
-    loadAllWaypoints() {
-        try {
-            const data = localStorage.getItem(this.STORAGE_KEYS.WAYPOINTS);
-            if (!data) return [];
-            
-            const waypoints = JSON.parse(data);
-            
-            // Validate loaded data
-            if (!Array.isArray(waypoints)) {
-                console.error('❌ Invalid waypoints data structure, resetting...');
-                this.saveToStorage([]);
-                return [];
-            }
-            
-            return waypoints;
-            
-        } catch (error) {
-            console.error('❌ Failed to load waypoints:', error);
-            // Reset corrupted storage
-            this.saveToStorage([]);
-            return [];
-        }
-    }
-
-    loadUnsyncedWaypoints() {
-        const all = this.loadAllWaypoints();
-        return all.filter(waypoint => !waypoint.synced);
-    }
-
-    loadRecentWaypoints(limit = 100) {
-        const all = this.loadAllWaypoints();
-        return all.slice(-limit).reverse(); // Most recent first
-    }
-
-    markWaypointsAsSynced(waypointIds) {
-        try {
-            const all = this.loadAllWaypoints();
-            let markedCount = 0;
-            
-            const updated = all.map(waypoint => {
-                if (waypointIds.includes(waypoint.id)) {
-                    markedCount++;
-                    return { 
-                        ...waypoint, 
-                        synced: true,
-                        syncedAt: new Date().toISOString(),
-                        syncAttempts: (waypoint.syncAttempts || 0) + 1
-                    };
-                }
-                return waypoint;
-            });
-            
-            this.saveToStorage(updated);
-            
-            this.updateSyncStatus({
-                totalWaypoints: updated.length,
-                unsyncedCount: updated.filter(w => !w.synced).length,
-                lastSync: new Date().toISOString(),
-                lastSyncCount: markedCount
-            });
-            
-            console.log(`✅ Marked ${markedCount} waypoints as synced`);
-            return markedCount;
-            
-        } catch (error) {
-            console.error('❌ Failed to mark waypoints as synced:', error);
-            return 0;
-        }
-    }
-
-    saveToStorage(waypoints) {
-        try {
-            localStorage.setItem(this.STORAGE_KEYS.WAYPOINTS, JSON.stringify(waypoints));
-        } catch (error) {
-            console.error('❌ Error saving to storage:', error);
-            
-            // Handle quota exceeded error
-            if (error.name === 'QuotaExceededError') {
-                console.warn('📦 Storage quota exceeded, performing emergency cleanup...');
-                const reducedWaypoints = this.performStorageCleanup(waypoints);
-                localStorage.setItem(this.STORAGE_KEYS.WAYPOINTS, JSON.stringify(reducedWaypoints));
-            }
-        }
-    }
-
-    updateSyncStatus(status) {
-        try {
-            const existing = this.getSyncStatus();
-            const updatedStatus = {
-                ...existing,
-                ...status,
-                updatedAt: new Date().toISOString(),
-                storageHealth: this.checkStorageHealth()
-            };
-            
-            localStorage.setItem(this.STORAGE_KEYS.SYNC_STATUS, JSON.stringify(updatedStatus));
-        } catch (error) {
-            console.error('❌ Error updating sync status:', error);
-        }
-    }
-
-    getSyncStatus() {
-        try {
-            const data = localStorage.getItem(this.STORAGE_KEYS.SYNC_STATUS);
-            const defaultStatus = {
-                totalWaypoints: 0,
-                unsyncedCount: 0,
-                lastSync: null,
-                lastSave: null,
-                firstSave: new Date().toISOString(),
-                updatedAt: new Date().toISOString(),
-                storageHealth: 'unknown'
-            };
-            
-            return data ? JSON.parse(data) : defaultStatus;
-        } catch (error) {
-            console.error('❌ Error getting sync status:', error);
-            return {
-                totalWaypoints: 0,
-                unsyncedCount: 0,
-                lastSync: null,
-                lastSave: null,
-                firstSave: new Date().toISOString(),
-                updatedAt: new Date().toISOString(),
-                storageHealth: 'error'
-            };
-        }
-    }
-
-    checkStorageHealth() {
-        try {
-            const waypoints = this.loadAllWaypoints();
-            const usagePercentage = (waypoints.length / this.QUOTA_LIMITS.MAX_WAYPOINTS) * 100;
-            
-            if (usagePercentage >= 95) return 'critical';
-            if (usagePercentage >= 80) return 'warning';
-            if (usagePercentage >= 50) return 'normal';
-            return 'healthy';
-        } catch (error) {
-            return 'error';
-        }
-    }
-
-    // ===== SYSTEM STATE BACKUP =====
-    saveSystemState(state) {
-        try {
-            const backupData = {
-                ...state,
-                backupTimestamp: new Date().toISOString(),
-                appVersion: '2.0.0',
-                dataIntegrity: this.calculateDataIntegrity(state)
-            };
-            
-            localStorage.setItem(this.STORAGE_KEYS.SYSTEM_STATE, JSON.stringify(backupData));
-            console.log('💾 System state saved successfully');
-            return true;
-        } catch (error) {
-            console.error('❌ Error saving system state:', error);
-            return false;
-        }
-    }
-
-    loadSystemState() {
-        try {
-            const data = localStorage.getItem(this.STORAGE_KEYS.SYSTEM_STATE);
-            if (!data) return null;
-            
-            const state = JSON.parse(data);
-            
-            // Validate backup integrity and age
-            if (!this.validateBackup(state)) {
-                console.warn('⚠️ System state backup validation failed');
-                return null;
-            }
-            
-            console.log('🔄 System state loaded successfully');
-            return state;
-        } catch (error) {
-            console.error('❌ Error loading system state:', error);
-            return null;
-        }
-    }
-
-    validateBackup(state) {
-        if (!state || !state.backupTimestamp) return false;
-        
-        // Check if backup is too old (more than 24 hours)
-        const backupAge = Date.now() - new Date(state.backupTimestamp).getTime();
-        const maxBackupAge = 24 * 60 * 60 * 1000; // 24 hours
-        
-        if (backupAge > maxBackupAge) {
-            console.warn('⚠️ System state backup is too old');
-            return false;
-        }
-        
-        // Check data integrity
-        if (state.dataIntegrity < 0.5) {
-            console.warn('⚠️ System state backup has low integrity');
-            return false;
-        }
-        
-        return true;
-    }
-
-    calculateDataIntegrity(state) {
-        let integrityScore = 1.0;
-        
-        // Check for essential fields
-        if (!state.driverData) integrityScore -= 0.3;
-        if (!state.sessionStartTime) integrityScore -= 0.2;
-        if (!state.journeyStatus) integrityScore -= 0.1;
-        
-        // Check data consistency
-        if (state.totalDistance && state.totalDistance < 0) integrityScore -= 0.2;
-        if (state.dataPoints && state.dataPoints < 0) integrityScore -= 0.1;
-        
-        return Math.max(0, integrityScore);
-    }
-
-    clearSystemState() {
-        try {
-            localStorage.removeItem(this.STORAGE_KEYS.SYSTEM_STATE);
-            console.log('🧹 System state cleared');
-            return true;
-        } catch (error) {
-            console.error('❌ Error clearing system state:', error);
-            return false;
-        }
-    }
-
-    // ===== DRIVER PROFILES MANAGEMENT =====
-    saveDriverProfile(profile) {
-        try {
-            const profiles = this.loadDriverProfiles();
-            const existingIndex = profiles.findIndex(p => p.driverId === profile.driverId);
-            
-            const enhancedProfile = {
-                ...profile,
-                updatedAt: new Date().toISOString(),
-                profileVersion: '1.0'
-            };
-            
-            if (existingIndex >= 0) {
-                profiles[existingIndex] = enhancedProfile;
-            } else {
-                enhancedProfile.createdAt = new Date().toISOString();
-                profiles.push(enhancedProfile);
-            }
-            
-            localStorage.setItem(this.STORAGE_KEYS.DRIVER_PROFILES, JSON.stringify(profiles));
-            console.log('✅ Driver profile saved:', profile.driverId);
-            return true;
-        } catch (error) {
-            console.error('❌ Error saving driver profile:', error);
-            return false;
-        }
-    }
-
-    loadDriverProfiles() {
-        try {
-            const data = localStorage.getItem(this.STORAGE_KEYS.DRIVER_PROFILES);
-            return data ? JSON.parse(data) : [];
-        } catch (error) {
-            console.error('❌ Error loading driver profiles:', error);
-            return [];
-        }
-    }
-
-    getDriverProfile(driverId) {
-        const profiles = this.loadDriverProfiles();
-        return profiles.find(p => p.driverId === driverId) || null;
-    }
-
-    // ===== VEHICLE PROFILES MANAGEMENT =====
-    saveVehicleProfile(profile) {
-        try {
-            const profiles = this.loadVehicleProfiles();
-            const existingIndex = profiles.findIndex(p => p.unit === profile.unit);
-            
-            const enhancedProfile = {
-                ...profile,
-                updatedAt: new Date().toISOString(),
-                profileVersion: '1.0'
-            };
-            
-            if (existingIndex >= 0) {
-                profiles[existingIndex] = enhancedProfile;
-            } else {
-                enhancedProfile.createdAt = new Date().toISOString();
-                profiles.push(enhancedProfile);
-            }
-            
-            localStorage.setItem(this.STORAGE_KEYS.VEHICLE_PROFILES, JSON.stringify(profiles));
-            console.log('✅ Vehicle profile saved:', profile.unit);
-            return true;
-        } catch (error) {
-            console.error('❌ Error saving vehicle profile:', error);
-            return false;
-        }
-    }
-
-    loadVehicleProfiles() {
-        try {
-            const data = localStorage.getItem(this.STORAGE_KEYS.VEHICLE_PROFILES);
-            return data ? JSON.parse(data) : [];
-        } catch (error) {
-            console.error('❌ Error loading vehicle profiles:', error);
-            return [];
-        }
-    }
-
-    getVehicleProfile(unit) {
-        const profiles = this.loadVehicleProfiles();
-        return profiles.find(p => p.unit === unit) || null;
-    }
-
-    // ===== STORAGE MAINTENANCE =====
-    performStorageMaintenance() {
-        try {
-            console.log('🔧 Performing storage maintenance...');
-            
-            const waypoints = this.loadAllWaypoints();
-            let actionsTaken = 0;
-            
-            // Remove waypoints older than 30 days
-            const thirtyDaysAgo = new Date();
-            thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-            
-            const filteredWaypoints = waypoints.filter(wp => {
-                const waypointDate = new Date(wp.createdAt || wp.timestamp);
-                if (waypointDate < thirtyDaysAgo && wp.synced) {
-                    actionsTaken++;
-                    return false;
-                }
-                return true;
-            });
-            
-            if (actionsTaken > 0) {
-                this.saveToStorage(filteredWaypoints);
-                console.log(`🧹 Removed ${actionsTaken} old waypoints during maintenance`);
-            }
-            
-            // Clean up corrupted data
-            const validWaypoints = filteredWaypoints.filter(wp => 
-                wp && wp.id && wp.lat && wp.lng && !isNaN(wp.lat) && !isNaN(wp.lng)
-            );
-            
-            if (validWaypoints.length < filteredWaypoints.length) {
-                const removedCount = filteredWaypoints.length - validWaypoints.length;
-                this.saveToStorage(validWaypoints);
-                console.log(`🧹 Removed ${removedCount} corrupted waypoints during maintenance`);
-                actionsTaken += removedCount;
-            }
-            
-            return actionsTaken;
-        } catch (error) {
-            console.error('❌ Error during storage maintenance:', error);
-            return 0;
-        }
-    }
-
-    getStorageStatistics() {
-        const waypoints = this.loadAllWaypoints();
-        const syncStatus = this.getSyncStatus();
-        const driverProfiles = this.loadDriverProfiles();
-        const vehicleProfiles = this.loadVehicleProfiles();
-        
-        return {
-            waypoints: {
-                total: waypoints.length,
-                synced: waypoints.filter(wp => wp.synced).length,
-                unsynced: waypoints.filter(wp => !wp.synced).length,
-                storageHealth: this.checkStorageHealth()
-            },
-            profiles: {
-                drivers: driverProfiles.length,
-                vehicles: vehicleProfiles.length
-            },
-            syncStatus: syncStatus,
-            lastMaintenance: new Date().toISOString()
-        };
-    }
-
-    clearAllData() {
-        try {
-            Object.values(this.STORAGE_KEYS).forEach(key => {
-                localStorage.removeItem(key);
-            });
-            console.log('🧹 All application data cleared');
-            return true;
-        } catch (error) {
-            console.error('❌ Error clearing all data:', error);
-            return false;
-        }
     }
 }
 
@@ -1901,7 +3242,7 @@ class EnhancedDTGPSLogger {
         // Enhanced Configuration with detailed settings
         this.waypointConfig = {
             collectionInterval: 1000,      // 1 second between GPS readings
-            maxWaypoints: 61200,           // Maximum waypoints in buffer
+            maxWaypoints: 250000,          // 250K waypoints - ENHANCED
             batchSize: 100,                // Waypoints per sync batch
             syncInterval: 30000,           // 30 seconds between sync attempts
             maxAccuracy: 50,               // Maximum GPS accuracy to accept (meters)
@@ -1910,7 +3251,9 @@ class EnhancedDTGPSLogger {
             enableKalmanFilter: true,      // Enable Kalman filtering
             enableSpeedSmoothing: true,    // Enable speed smoothing
             offlineStorage: true,          // Enable offline storage
-            realTimeTracking: true         // Enable real-time tracking
+            realTimeTracking: true,        // Enable real-time tracking
+            enableCompression: true,       // ENHANCED: Enable data compression
+            autoArchive: true              // ENHANCED: Enable auto archiving
         };
 
         // Enhanced Components with comprehensive initialization
@@ -1919,11 +3262,15 @@ class EnhancedDTGPSLogger {
         this.cleanupManager = new FirebaseCleanupManager(database);
         this.kalmanFilter = new GPSKalmanFilter();
         this.resumeManager = new ResumeManager(this);
+        
+        // NEW ENHANCED COMPONENTS
+        this.retryManager = new EnhancedRetryManager();
+        this.storageManager = new EnhancedStorageManager();
+        this.syncManager = new IntelligentSyncManager();
 
         // Storage & Buffers with enhanced capabilities
         this.waypointBuffer = new CircularBuffer(this.waypointConfig.maxWaypoints);
         this.unsyncedWaypoints = new Set();
-        this.storageManager = new EnhancedStorageManager();
         
         // State Management with comprehensive tracking
         this.driverData = null;
@@ -1969,17 +3316,6 @@ class EnhancedDTGPSLogger {
         this.maxRecoveryAttempts = 3;
         this.healthMetrics = {
             gpsUpdates: 0,
-            waypoint
-// ===== MAIN ENHANCED GPS LOGGER CLASS (Lanjutan) =====
-class EnhancedDTGPSLogger {
-    constructor() {
-        // ... (konfigurasi sebelumnya)
-
-        // Recovery and Health Monitoring
-        this.recoveryAttempts = 0;
-        this.maxRecoveryAttempts = 3;
-        this.healthMetrics = {
-            gpsUpdates: 0,
             waypointSaves: 0,
             firebaseSends: 0,
             errors: 0,
@@ -2019,7 +3355,22 @@ class EnhancedDTGPSLogger {
                 this.addLog(`📡 Offline queue: ${results.sent} terkirim, ${results.failed} gagal`, 'info');
             });
 
-            console.log('✅ System fully initialized with all features');
+            // Setup enhanced retry callbacks
+            this.retryManager.addRetryCallback((result) => {
+                this.addLog(`Retry ${result.status}: ${result.id}`, 
+                           result.status === 'completed' ? 'success' : 'warning');
+            });
+
+            // Setup intelligent sync listeners
+            this.syncManager.addSyncListener((result) => {
+                if (result.type === 'success') {
+                    this.addLog(`Smart sync berhasil (${result.strategy})`, 'success');
+                } else {
+                    this.addLog(`Smart sync gagal: ${result.error}`, 'error');
+                }
+            });
+
+            console.log('✅ System fully initialized with all enhanced features');
             
             // Perform initial health check
             setTimeout(() => this.healthCheck(), 5000);
@@ -2029,6 +3380,66 @@ class EnhancedDTGPSLogger {
             this.addLog('Error inisialisasi sistem', 'error');
         }
     }
+
+    setupEnhancedFeatures() {
+        // Monitor storage health
+        setInterval(() => {
+            this.checkEnhancedStorageHealth();
+        }, 60000);
+
+        // Setup intelligent sync triggers
+        setInterval(() => {
+            if (this.isOnline && this.unsyncedWaypoints.size > 0) {
+                this.triggerEnhancedSync();
+            }
+        }, 120000);
+    }
+
+    async triggerEnhancedSync() {
+        if (!this.isOnline) return;
+        
+        try {
+            await this.syncManager.triggerSmartSync();
+        } catch (error) {
+            console.error('Enhanced sync failed:', error);
+            this.addLog('Smart sync gagal', 'error');
+        }
+    }
+
+    checkEnhancedStorageHealth() {
+        const storageStats = this.storageManager.getEnhancedStorageStatistics();
+        
+        if (storageStats.capacity.health === 'critical') {
+            this.addLog('🚨 Storage hampir penuh!', 'error');
+            this.triggerEmergencyCleanup();
+        } else if (storageStats.capacity.health === 'warning') {
+            this.addLog('⚠️ Storage menipis', 'warning');
+        }
+    }
+
+    triggerEmergencyCleanup() {
+        // Perform emergency storage cleanup
+        const waypoints = this.storageManager.loadAllWaypoints();
+        const cleaned = this.storageManager.performEmergencyCleanup(waypoints);
+        this.storageManager.saveToStorage(cleaned);
+        this.addLog('Emergency storage cleanup dilakukan', 'warning');
+    }
+
+    getEnhancedSystemStatus() {
+        return {
+            storage: this.storageManager.getEnhancedStorageStatistics(),
+            retry: this.retryManager.getQueueStats(),
+            sync: this.syncManager.getSyncAnalytics(),
+            network: this.syncManager.networkInfo,
+            performance: {
+                gpsUpdates: this.healthMetrics.gpsUpdates,
+                waypointSaves: this.healthMetrics.waypointSaves,
+                firebaseSends: this.healthMetrics.firebaseSends
+            }
+        };
+    }
+
+    // === IMPLEMENTASI LENGKAP DARI SEMUA METHOD YANG ADA DI KODE LAMA ===
 
     setupEventListeners() {
         // Login Form
@@ -2106,266 +3517,105 @@ class EnhancedDTGPSLogger {
         // Storage maintenance every hour
         setInterval(() => this.storageManager.performStorageMaintenance(), 3600000);
 
-        // Sync waypoints every 2 minutes if online
+        // Enhanced sync every 2 minutes if online
         setInterval(() => {
             if (this.isOnline && this.unsyncedWaypoints.size > 0) {
-                this.syncWaypointsToServer();
+                this.triggerEnhancedSync();
             }
         }, 120000);
+
+        // Setup enhanced features
+        this.setupEnhancedFeatures();
     }
 
-    // ===== RECOVERY SYSTEM =====
-    recoverFromBackground() {
-        console.log('🔄 Memulai recovery dari background...');
-        this.healthMetrics.recoveryAttempts++;
+    // === IMPLEMENTASI METHOD-METHOD UTAMA DARI KODE LAMA ===
+
+    handleLogin() {
+        const driverName = document.getElementById('driverName').value.trim();
+        const unitNumber = document.getElementById('unitNumber').value.trim();
         
-        // Reset semua komponen GPS
-        this.gpsProcessor.reset();
-        this.speedCalculator.reset();
-        
-        // Restart GPS tracking
-        if (this.driverData && this.journeyStatus === 'started') {
-            this.stopRealGPSTracking();
-            setTimeout(() => {
-                this.startRealGPSTracking();
-                this.addLog('GPS tracking di-resume setelah background', 'success');
-            }, 1000);
-        }
-
-        // Force update semua tampilan
-        this.updateAllDisplays();
-        
-        // Reset recovery attempts
-        this.recoveryAttempts = 0;
-
-        // Update health metrics
-        this.healthMetrics.lastHealthCheck = new Date();
-    }
-
-    healthCheck() {
-        const now = Date.now();
-        
-        // Check jika GPS stalled
-        if (this.lastPosition && this.lastPosition.timestamp) {
-            const timeSinceLastUpdate = now - this.lastPosition.timestamp.getTime();
-            
-            if (timeSinceLastUpdate > 30000 && this.isTracking) {
-                console.warn('⚠️ GPS stalled, attempting recovery...');
-                this.recoverGPS();
-            }
-        }
-
-        // Check jika perlu resume dari background
-        if (this.resumeManager.getTimeSinceLastActive() > 60000 && this.isTracking) {
-            console.log('🔍 Performing background recovery check...');
-            this.recoverFromBackground();
-        }
-
-        // Update health metrics
-        this.healthMetrics.lastHealthCheck = new Date();
-        this.performanceMetrics.totalUptime = now - this.healthMetrics.startTime;
-
-        // Log health status periodically
-        if (now % 60000 < 1000) { // Every minute
-            console.log('❤️ System Health:', {
-                uptime: Math.floor(this.performanceMetrics.totalUptime / 60000) + ' minutes',
-                gpsUpdates: this.healthMetrics.gpsUpdates,
-                waypointSaves: this.healthMetrics.waypointSaves,
-                firebaseSends: this.healthMetrics.firebaseSends,
-                errors: this.healthMetrics.errors
-            });
-        }
-    }
-
-    recoverGPS() {
-        if (this.recoveryAttempts >= this.maxRecoveryAttempts) {
-            console.error('❌ Max recovery attempts reached, stopping GPS');
-            this.stopRealGPSTracking();
-            this.addLog('GPS gagal pulih setelah beberapa percobaan', 'error');
+        if (!driverName || !unitNumber) {
+            this.addLog('Nama driver dan nomor unit harus diisi', 'error');
             return;
         }
 
-        this.recoveryAttempts++;
-        this.healthMetrics.recoveryAttempts++;
-        console.log(`🔄 GPS Recovery attempt ${this.recoveryAttempts}`);
+        this.driverData = {
+            name: driverName,
+            unit: unitNumber,
+            sessionId: `session_${Date.now()}`,
+            loginTime: new Date().toISOString()
+        };
 
-        // Stop dan restart GPS
+        // Initialize Firebase reference
+        this.firebaseRef = database.ref('/units/' + this.driverData.unit);
+        this.chatRef = database.ref('/chat/' + this.driverData.unit);
+
+        // Show main interface
+        document.getElementById('loginScreen').classList.add('hidden');
+        document.getElementById('mainInterface').classList.remove('hidden');
+
+        this.addLog(`Driver ${driverName} (Unit ${unitNumber}) login berhasil`, 'success');
+        this.updateDriverDisplay();
+    }
+
+    startJourney() {
+        if (!this.driverData) {
+            this.addLog('Silakan login terlebih dahulu', 'error');
+            return;
+        }
+
+        this.journeyStatus = 'started';
+        this.sessionStartTime = new Date();
+        this.totalDistance = 0;
+        this.dataPoints = 0;
+
+        this.startRealGPSTracking();
+        this.startDataTransmission();
+
+        this.addLog('Perjalanan dimulai', 'success');
+        this.updateJourneyDisplay();
+    }
+
+    pauseJourney() {
+        this.journeyStatus = 'paused';
         this.stopRealGPSTracking();
         
-        setTimeout(() => {
-            this.startRealGPSTracking();
-            this.addLog(`Percobaan pemulihan GPS ${this.recoveryAttempts}`, 'warning');
-        }, 2000);
+        this.addLog('Perjalanan dijeda', 'warning');
+        this.updateJourneyDisplay();
     }
 
-    // ===== SYSTEM STATE MANAGEMENT =====
-    saveSystemState() {
-        const systemState = {
-            driverData: this.driverData,
-            totalDistance: this.totalDistance,
-            dataPoints: this.dataPoints,
-            sessionStartTime: this.sessionStartTime,
-            journeyStatus: this.journeyStatus,
-            lastPosition: this.lastPosition,
-            currentSpeed: this.currentSpeed,
-            waypointCount: this.waypointBuffer.count,
-            unsyncedCount: this.unsyncedWaypoints.size,
-            healthMetrics: this.healthMetrics,
-            timestamp: new Date().toISOString()
-        };
+    endJourney() {
+        this.journeyStatus = 'ended';
+        this.stopRealGPSTracking();
+        this.stopDataTransmission();
 
-        const success = this.storageManager.saveSystemState(systemState);
-        if (success) {
-            console.log('💾 System state saved successfully');
-        } else {
-            console.error('❌ Failed to save system state');
-        }
+        // Schedule cleanup
+        this.cleanupManager.scheduleCleanup(this.driverData.unit, this.driverData.sessionId, 'journey_ended');
+
+        this.addLog('Perjalanan selesai', 'success');
+        this.updateJourneyDisplay();
     }
 
-    loadSystemState() {
-        const savedState = this.storageManager.loadSystemState();
-        if (!savedState) return;
-
-        // Only restore if session was active
-        if (savedState.driverData && savedState.journeyStatus !== 'ready') {
-            console.log('🔄 Loading previous system state...');
-            
-            this.driverData = savedState.driverData;
-            this.totalDistance = savedState.totalDistance || 0;
-            this.dataPoints = savedState.dataPoints || 0;
-            this.journeyStatus = savedState.journeyStatus || 'ready';
-            this.currentSpeed = savedState.currentSpeed || 0;
-
-            // Restore session time
-            if (savedState.sessionStartTime) {
-                this.sessionStartTime = new Date(savedState.sessionStartTime);
-            }
-
-            // Update Firebase reference
-            if (this.driverData?.unit) {
-                this.firebaseRef = database.ref('/units/' + this.driverData.unit);
-            }
-
-            // Show driver app jika ada session aktif
-            if (this.driverData) {
-                this.showDriverApp();
-                
-                // Auto-resume tracking jika dalam perjalanan
-                if (this.journeyStatus === 'started') {
-                    setTimeout(() => {
-                        this.startRealGPSTracking();
-                        this.addLog('Session sebelumnya di-resume otomatis', 'success');
-                    }, 2000);
-                }
-            }
-
-            this.updateAllDisplays();
-        }
-    }
-
-    updateAllDisplays() {
-        this.updateTime();
-        this.updateSessionDuration();
-        this.updateWaypointDisplay();
-        this.updateConnectionStatus(this.isOnline);
-        
-        // Update metrics
-        document.getElementById('todayDistance')?.textContent = this.totalDistance.toFixed(3);
-        document.getElementById('dataPoints')?.textContent = this.dataPoints;
-        document.getElementById('currentSpeed')?.textContent = this.currentSpeed.toFixed(1);
-        
-        // Update journey status display
-        this.updateJourneyStatusDisplay();
-
-        // Update health indicators
-        this.updateHealthIndicators();
-    }
-
-    updateJourneyStatusDisplay() {
-        const vehicleStatus = document.getElementById('vehicleStatus');
-        if (!vehicleStatus) return;
-
-        switch(this.journeyStatus) {
-            case 'started':
-                vehicleStatus.textContent = 'ON TRIP';
-                vehicleStatus.className = 'bg-success text-white rounded px-2 py-1';
-                break;
-            case 'paused':
-                vehicleStatus.textContent = 'PAUSED';
-                vehicleStatus.className = 'bg-warning text-dark rounded px-2 py-1';
-                break;
-            case 'ended':
-                vehicleStatus.textContent = 'COMPLETED';
-                vehicleStatus.className = 'bg-info text-white rounded px-2 py-1';
-                break;
-            default:
-                vehicleStatus.textContent = 'READY';
-                vehicleStatus.className = 'bg-secondary text-white rounded px-2 py-1';
-        }
-    }
-
-    updateHealthIndicators() {
-        // Update GPS status indicator
-        const gpsIndicator = document.getElementById('gpsStatusIndicator');
-        if (gpsIndicator) {
-            if (this.isTracking && this.lastPosition) {
-                const timeSinceUpdate = Date.now() - this.lastPosition.timestamp.getTime();
-                if (timeSinceUpdate < 10000) {
-                    gpsIndicator.className = 'gps-status active';
-                    gpsIndicator.title = 'GPS Active';
-                } else {
-                    gpsIndicator.className = 'gps-status warning';
-                    gpsIndicator.title = 'GPS Stalled';
-                }
-            } else {
-                gpsIndicator.className = 'gps-status inactive';
-                gpsIndicator.title = 'GPS Inactive';
-            }
-        }
-
-        // Update storage indicator
-        const storageIndicator = document.getElementById('storageStatusIndicator');
-        if (storageIndicator) {
-            const storageStats = this.storageManager.getStorageStatistics();
-            if (storageStats.waypoints.storageHealth === 'healthy') {
-                storageIndicator.className = 'storage-status healthy';
-            } else if (storageStats.waypoints.storageHealth === 'warning') {
-                storageIndicator.className = 'storage-status warning';
-            } else {
-                storageIndicator.className = 'storage-status critical';
-            }
-            storageIndicator.title = `Storage: ${storageStats.waypoints.storageHealth}`;
-        }
-    }
-
-    // ===== REAL-TIME GPS TRACKING =====
     startRealGPSTracking() {
-        if (!navigator.geolocation) {
-            this.addLog('❌ GPS tidak didukung di browser ini', 'error');
+        if (this.watchId) {
+            console.warn('GPS tracking sudah berjalan');
             return;
         }
 
-        console.log('📍 Starting REAL-TIME GPS tracking...');
-        
         const options = {
             enableHighAccuracy: true,
-            timeout: 10000,
-            maximumAge: 0
+            timeout: 5000,
+            maximumAge: 1000
         };
 
-        if (this.watchId) {
-            navigator.geolocation.clearWatch(this.watchId);
-        }
-
         this.watchId = navigator.geolocation.watchPosition(
-            (position) => this.handleRealPositionUpdate(position),
+            (position) => this.handleGPSPosition(position),
             (error) => this.handleGPSError(error),
             options
         );
 
         this.isTracking = true;
-        this.recoveryAttempts = 0;
-        this.addLog('📍 GPS Real-Time diaktifkan', 'success');
+        console.log('📍 GPS tracking started');
     }
 
     stopRealGPSTracking() {
@@ -2377,689 +3627,155 @@ class EnhancedDTGPSLogger {
         console.log('📍 GPS tracking stopped');
     }
 
-    handleRealPositionUpdate(position) {
-        const startTime = performance.now();
+    handleGPSPosition(position) {
+        this.healthMetrics.gpsUpdates++;
         
-        try {
-            this.healthMetrics.gpsUpdates++;
-            
-            const accuracy = position.coords.accuracy;
-            console.log(`📍 GPS Update - Lat: ${position.coords.latitude.toFixed(6)}, Lng: ${position.coords.longitude.toFixed(6)}, Accuracy: ${accuracy}m`);
-
-            const processedPosition = this.gpsProcessor.processRawPosition(position);
-            
-            if (!processedPosition) {
-                console.log('🔇 Position filtered out by processor');
-                return;
-            }
-
-            const currentPosition = {
-                lat: parseFloat(processedPosition.lat.toFixed(6)),
-                lng: parseFloat(processedPosition.lng.toFixed(6)),
-                accuracy: parseFloat(accuracy.toFixed(1)),
-                speed: processedPosition.speed,
-                bearing: processedPosition.bearing,
-                timestamp: new Date(),
-                isOnline: this.isOnline,
-                processed: true,
-                kalmanAccuracy: processedPosition.accuracy,
-                confidence: processedPosition.confidence
-            };
-
-            const enhancedSpeed = this.speedCalculator.calculateEnhancedSpeed(
-                currentPosition, 
-                this.lastPosition, 
-                currentPosition.speed
-            );
-
-            this.currentSpeed = enhancedSpeed;
-
-            const distanceKm = this.calculateEnhancedDistance(currentPosition);
-            
-            this.processEnhancedWaypoint({
-                ...currentPosition,
-                id: `wp_rt_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-                sessionId: this.driverData?.sessionId || 'unknown',
-                unit: this.driverData?.unit || 'unknown',
-                driver: this.driverData?.name || 'unknown',
-                synced: false,
-                enhancedSpeed: this.currentSpeed,
-                distanceIncrement: distanceKm,
-                kalmanFiltered: true,
-                confidence: processedPosition.confidence,
-                timestamp: new Date().toISOString()
-            });
-
-            this.lastPosition = currentPosition;
-            this.updateEnhancedGPSDisplay(currentPosition);
-
-            // Reset recovery attempts on successful update
-            this.recoveryAttempts = 0;
-
-            // Update performance metrics
-            this.performanceMetrics.gpsProcessingTime = performance.now() - startTime;
-
-        } catch (error) {
-            console.error('❌ Error in real-time position handling:', error);
-            this.healthMetrics.errors++;
-            this.addLog('Error processing GPS data', 'error');
+        // Process raw GPS data through enhanced processor
+        const processedPosition = this.gpsProcessor.processRawPosition(position);
+        if (!processedPosition) {
+            console.warn('🚫 GPS position rejected by processor');
+            return;
         }
-    }
 
-    calculateEnhancedDistance(currentPosition) {
-        if (!this.lastPosition || !this.lastPosition.timestamp) return 0;
-
-        const timeDiffMs = currentPosition.timestamp - this.lastPosition.timestamp;
-        if (timeDiffMs < 800) return 0;
-
-        const distanceKm = this.haversineDistance(
-            this.lastPosition.lat, this.lastPosition.lng,
-            currentPosition.lat, currentPosition.lng
+        // Calculate enhanced speed
+        const enhancedSpeed = this.speedCalculator.calculateEnhancedSpeed(
+            processedPosition,
+            this.lastPosition,
+            processedPosition.speed
         );
 
-        const minDistance = 0.0001;
-        if (distanceKm < minDistance) return 0;
+        // Update current state
+        this.lastPosition = processedPosition;
+        this.currentSpeed = enhancedSpeed;
 
-        if (this.journeyStatus === 'started') {
-            this.totalDistance += distanceKm;
-            document.getElementById('todayDistance').textContent = this.totalDistance.toFixed(3);
-            this.updateAverageSpeed();
-            return distanceKm;
+        // Calculate distance if we have previous position
+        if (this.lastPosition) {
+            const distance = this.calculateDistance(
+                this.lastPosition.lat, this.lastPosition.lng,
+                processedPosition.lat, processedPosition.lng
+            );
+            this.totalDistance += distance;
         }
-        
-        return 0;
-    }
 
-    haversineDistance(lat1, lon1, lat2, lon2) {
-        const R = 6371;
-        const dLat = (lat2 - lat1) * Math.PI / 180;
-        const dLon = (lon2 - lon1) * Math.PI / 180;
-        const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
-                  Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * 
-                  Math.sin(dLon/2) * Math.sin(dLon/2);
-        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-        return R * c;
-    }
+        // Create waypoint
+        const waypoint = {
+            id: `wp_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+            lat: processedPosition.lat,
+            lng: processedPosition.lng,
+            speed: enhancedSpeed,
+            accuracy: processedPosition.accuracy,
+            bearing: processedPosition.bearing,
+            timestamp: new Date().toISOString(),
+            confidence: processedPosition.confidence,
+            synced: false,
+            kalmanFiltered: true
+        };
 
-    processEnhancedWaypoint(waypoint) {
-        if (!this.isValidCoordinate(waypoint.lat, waypoint.lng)) return;
-
-        const startTime = performance.now();
-        
+        // Save to storage and buffers
+        this.saveWaypoint(waypoint);
         this.waypointBuffer.push(waypoint);
         this.unsyncedWaypoints.add(waypoint.id);
+
+        // Update displays
+        this.updateAllDisplays();
         
-        this.healthMetrics.waypointSaves++;
+        console.log(`📍 GPS Update: ${waypoint.lat.toFixed(6)}, ${waypoint.lng.toFixed(6)} | Speed: ${enhancedSpeed.toFixed(1)} km/h | Accuracy: ${waypoint.accuracy.toFixed(1)}m`);
+    }
+
+    handleGPSError(error) {
+        let errorMessage = 'GPS Error: ';
+        
+        switch(error.code) {
+            case error.PERMISSION_DENIED:
+                errorMessage += 'Akses GPS ditolak';
+                break;
+            case error.POSITION_UNAVAILABLE:
+                errorMessage += 'Posisi tidak tersedia';
+                break;
+            case error.TIMEOUT:
+                errorMessage += 'Timeout mendapatkan posisi';
+                break;
+            default:
+                errorMessage += 'Error tidak diketahui';
+        }
+        
+        console.error('❌ ' + errorMessage);
+        this.addLog(errorMessage, 'error');
+        
+        this.healthMetrics.errors++;
+    }
+
+    saveWaypoint(waypoint) {
         this.storageManager.saveWaypoint(waypoint);
-        
-        this.updateWaypointDisplay();
-        
-        this.dataPoints++;
-        document.getElementById('dataPoints').textContent = this.dataPoints;
-
-        console.log(`📍 GPS Point: ${waypoint.lat.toFixed(6)}, ${waypoint.lng.toFixed(6)}, Speed: ${this.currentSpeed.toFixed(1)}km/h, Confidence: ${waypoint.confidence?.toFixed(2) || 'N/A'}`);
-
-        this.performanceMetrics.waypointSaveTime = performance.now() - startTime;
-    }
-
-    updateEnhancedGPSDisplay(waypoint) {
-        document.getElementById('currentLat').textContent = waypoint.lat.toFixed(6);
-        document.getElementById('currentLng').textContent = waypoint.lng.toFixed(6);
-        document.getElementById('currentSpeed').textContent = this.currentSpeed.toFixed(1);
-        document.getElementById('gpsAccuracy').textContent = waypoint.accuracy.toFixed(1) + ' m';
-        document.getElementById('gpsBearing').textContent = waypoint.bearing ? waypoint.bearing + '°' : '-';
-        
-        const enhancedInfo = document.getElementById('enhancedInfo');
-        if (enhancedInfo) {
-            const confidence = waypoint.confidence ? (waypoint.confidence * 100).toFixed(0) + '%' : 'N/A';
-            enhancedInfo.textContent = `🎯 Real-Time GPS | Confidence: ${confidence}`;
-            enhancedInfo.className = waypoint.confidence > 0.7 ? 'text-success' : 
-                                   waypoint.confidence > 0.4 ? 'text-warning' : 'text-danger';
-        }
-    }
-
-    updateWaypointDisplay() {
-        const waypointCount = document.getElementById('waypointCount');
-        const unsyncedCount = document.getElementById('unsyncedCount');
-        const waypointStatus = document.getElementById('waypointStatus');
-
-        if (waypointCount) waypointCount.textContent = this.waypointBuffer.count;
-        if (unsyncedCount) unsyncedCount.textContent = this.unsyncedWaypoints.size;
-        if (waypointStatus) {
-            waypointStatus.textContent = this.isOnline ? 
-                '🟢 Mengumpulkan waypoint...' : 
-                `🔴 Offline (${this.unsyncedWaypoints.size} menunggu sync)`;
-        }
-    }
-
-    // ===== CORE APPLICATION METHODS =====
-    handleLogin() {
-        const driverName = document.getElementById('driverName');
-        const unitNumber = document.getElementById('unitNumber');
-
-        if (driverName && unitNumber && driverName.value && unitNumber.value) {
-            this.driverData = {
-                name: driverName.value,
-                unit: unitNumber.value,
-                year: this.getVehicleYear(unitNumber.value),
-                sessionId: this.generateSessionId(),
-                driverId: 'driver_' + Date.now()
-            };
-
-            // Save driver profile
-            this.storageManager.saveDriverProfile({
-                driverId: this.driverData.driverId,
-                name: this.driverData.name,
-                unit: this.driverData.unit,
-                lastLogin: new Date().toISOString()
-            });
-
-            this.firebaseRef = database.ref('/units/' + this.driverData.unit);
-            
-            const cleanData = {
-                driver: this.driverData.name,
-                unit: this.driverData.unit,
-                sessionId: this.driverData.sessionId,
-                journeyStatus: 'ready',
-                lastUpdate: new Date().toLocaleTimeString('id-ID'),
-                lat: 0, lng: 0, speed: 0, distance: 0,
-                fuel: 100, accuracy: 0, timestamp: new Date().toISOString(),
-                gpsMode: 'real-time'
-            };
-
-            this.firebaseRef.set(cleanData);
-            this.showDriverApp();
-            this.startDataTransmission();
-            
-            setTimeout(() => {
-                this.startJourney();
-            }, 1000);
-        } else {
-            alert('Harap isi semua field!');
-        }
-    }
-
-    getVehicleYear(unit) {
-        const yearMap = {
-            'DT-06': '2018', 'DT-07': '2018', 'DT-12': '2020', 'DT-13': '2020', 
-            'DT-15': '2020', 'DT-16': '2020', 'DT-17': '2020', 'DT-18': '2020',
-            'DT-23': '2021', 'DT-24': '2021', 'DT-25': '2022', 'DT-26': '2022',
-            'DT-27': '2022', 'DT-28': '2022', 'DT-29': '2022', 'DT-32': '2024',
-            'DT-33': '2025', 'DT-34': '2025', 'DT-35': '2025', 'DT-36': '2020',
-            'DT-37': '2020', 'DT-38': '2020', 'DT-39': '2020'
-        };
-        return yearMap[unit] || 'Unknown';
-    }
-
-    generateSessionId() {
-        return 'SESS_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
-    }
-
-    showDriverApp() {
-        const loginScreen = document.getElementById('loginScreen');
-        const driverApp = document.getElementById('driverApp');
-        
-        if (loginScreen) loginScreen.style.display = 'none';
-        if (driverApp) driverApp.style.display = 'block';
-        
-        const vehicleName = document.getElementById('vehicleName');
-        const driverDisplayName = document.getElementById('driverDisplayName');
-        
-        if (vehicleName) vehicleName.textContent = this.driverData.unit;
-        if (driverDisplayName) driverDisplayName.textContent = this.driverData.name;
-        
-        this.sessionStartTime = new Date();
-        this.lastUpdateTime = new Date();
-        this.updateSessionDuration();
-        this.updateWaypointDisplay();
-        this.setupChatSystem();
-        this.updateHealthIndicators();
-        
-        setTimeout(() => {
-            this.startRealGPSTracking();
-        }, 500);
-        
-        this.addLog(`✅ Login berhasil - ${this.driverData.name} (${this.driverData.unit}) - GPS Real-Time Enhanced`, 'success');
+        this.healthMetrics.waypointSaves++;
     }
 
     startDataTransmission() {
+        // Start sending real-time data to Firebase
         this.sendInterval = setInterval(() => {
-            if (this.lastPosition) {
-                this.sendToFirebase();
+            if (this.isOnline && this.lastPosition) {
+                this.sendRealTimeData();
             }
-        }, 3000);
+        }, 2000); // Send every 2 seconds
+
+        // Start syncing waypoints
+        this.syncInterval = setInterval(() => {
+            if (this.isOnline) {
+                this.syncWaypointsToServer();
+            }
+        }, this.waypointConfig.syncInterval);
+
+        console.log('📡 Data transmission started');
     }
 
-    async sendToFirebase() {
+    stopDataTransmission() {
+        if (this.sendInterval) {
+            clearInterval(this.sendInterval);
+            this.sendInterval = null;
+        }
+        if (this.syncInterval) {
+            clearInterval(this.syncInterval);
+            this.syncInterval = null;
+        }
+        console.log('📡 Data transmission stopped');
+    }
+
+    async sendRealTimeData() {
         if (!this.firebaseRef || !this.lastPosition) return;
 
-        const startTime = performance.now();
-        
         try {
+            const realTimeData = this.getRealTimeData();
+            await this.firebaseRef.set(realTimeData);
             this.healthMetrics.firebaseSends++;
-
-            const gpsData = {
-                driver: this.driverData.name,
-                unit: this.driverData.unit,
-                lat: parseFloat(this.lastPosition.lat.toFixed(6)),
-                lng: parseFloat(this.lastPosition.lng.toFixed(6)),
-                speed: parseFloat(this.currentSpeed.toFixed(1)),
-                accuracy: parseFloat(this.lastPosition.accuracy.toFixed(1)),
-                bearing: this.lastPosition.bearing ? parseFloat(this.lastPosition.bearing.toFixed(0)) : null,
-                timestamp: new Date().toISOString(),
-                lastUpdate: new Date().toLocaleTimeString('id-ID'),
-                distance: parseFloat(this.totalDistance.toFixed(3)),
-                journeyStatus: this.journeyStatus,
-                batteryLevel: this.getBatteryLevel(),
-                sessionId: this.driverData.sessionId,
-                isOfflineData: false,
-                fuel: this.calculateFuelLevel(),
-                gpsMode: 'real-time-enhanced',
-                processed: true,
-                confidence: this.lastPosition.confidence || 0.5,
-                dataQuality: 'high'
-            };
-
-            if (this.isOnline) {
-                await this.firebaseRef.set(gpsData);
-                this.addLog(`📡 Data: ${this.currentSpeed.toFixed(1)} km/h | ${this.totalDistance.toFixed(3)} km`, 'success');
-                this.updateConnectionStatus(true);
-            } else {
-                this.offlineQueue.addToQueue(gpsData);
-                this.updateConnectionStatus(false);
-            }
-            
-            this.performanceMetrics.firebaseSendTime = performance.now() - startTime;
-            
         } catch (error) {
-            console.error('Error sending to Firebase:', error);
-            this.healthMetrics.errors++;
+            console.error('❌ Failed to send real-time data:', error);
+            this.addLog('Gagal mengirim data real-time', 'error');
         }
     }
 
-    calculateFuelLevel() {
-        const baseFuel = 100;
-        const fuelConsumptionRate = 0.25;
-        const fuelUsed = this.totalDistance * fuelConsumptionRate;
-        return Math.max(0, Math.min(100, Math.round(baseFuel - fuelUsed)));
-    }
-
-    getBatteryLevel() {
-        return Math.max(20, Math.floor(Math.random() * 100));
-    }
-
-    checkNetworkStatus() {
-        const wasOnline = this.isOnline;
-        this.isOnline = navigator.onLine;
+    getRealTimeData() {
+        if (!this.lastPosition) return null;
         
-        if (wasOnline !== this.isOnline) {
-            if (this.isOnline) {
-                this.addLog('📱 Koneksi pulih - sync data', 'success');
-                this.updateConnectionStatus(true);
-                
-                setTimeout(() => {
-                    this.syncWaypointsToServer();
-                    this.offlineQueue.processQueue();
-                    this.cleanupManager.processCleanup();
-                }, 1000);
-                
-            } else {
-                this.addLog('📱 Koneksi terputus - mode offline', 'warning');
-                this.updateConnectionStatus(false);
-            }
-        }
-    }
-
-    updateConnectionStatus(connected) {
-        const dot = document.getElementById('connectionDot');
-        const status = document.getElementById('connectionStatus');
-        
-        if (connected) {
-            if (dot) dot.className = 'connection-status connected';
-            if (status) {
-                status.textContent = 'TERHUBUNG';
-                status.className = 'text-success';
-            }
-        } else {
-            if (dot) dot.className = 'connection-status disconnected';
-            if (status) {
-                status.textContent = `OFFLINE (${this.unsyncedWaypoints.size} waypoint menunggu)`;
-                status.className = 'text-danger';
-            }
-        }
-    }
-
-    addLog(message, type = 'info') {
-        const logContainer = document.getElementById('dataLogs');
-        if (!logContainer) return;
-
-        const alertClass = {
-            'info': 'alert-info',
-            'success': 'alert-success', 
-            'error': 'alert-danger',
-            'warning': 'alert-warning'
-        }[type] || 'alert-info';
-
-        const logEntry = document.createElement('div');
-        logEntry.className = `alert ${alertClass} py-2 mb-2`;
-        logEntry.innerHTML = `<small>${new Date().toLocaleTimeString('id-ID')}: ${message}</small>`;
-        
-        logContainer.insertBefore(logEntry, logContainer.firstChild);
-        
-        if (logContainer.children.length > 6) {
-            logContainer.removeChild(logContainer.lastChild);
-        }
-    }
-
-    updateTime() {
-        const currentTimeEl = document.getElementById('currentTime');
-        if (currentTimeEl) {
-            currentTimeEl.textContent = new Date().toLocaleTimeString('id-ID');
-        }
-    }
-
-    updateSessionDuration() {
-        if (!this.sessionStartTime) return;
-        
-        const now = new Date();
-        const diff = now - this.sessionStartTime;
-        const hours = Math.floor(diff / 3600000);
-        const minutes = Math.floor((diff % 3600000) / 60000);
-        const seconds = Math.floor((diff % 60000) / 1000);
-        
-        const sessionDurationEl = document.getElementById('sessionDuration');
-        if (sessionDurationEl) {
-            sessionDurationEl.textContent = 
-                `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
-        }
-    }
-
-    updateAverageSpeed() {
-        if (this.dataPoints > 0 && this.sessionStartTime && this.totalDistance > 0) {
-            const durationHours = (new Date() - this.sessionStartTime) / 3600000;
-            const avgSpeed = durationHours > 0 ? this.totalDistance / durationHours : 0;
-            document.getElementById('avgSpeed').textContent = avgSpeed.toFixed(1);
-        }
-    }
-
-    startJourney() {
-        this.journeyStatus = 'started';
-        this.lastUpdateTime = new Date();
-        this.updateJourneyStatusDisplay();
-        this.addLog('Perjalanan dimulai - Real-time tracking aktif', 'success');
-        this.sendToFirebase();
-    }
-
-    pauseJourney() {
-        this.journeyStatus = 'paused';
-        this.updateJourneyStatusDisplay();
-        this.addLog('Perjalanan dijeda', 'warning');
-        this.sendToFirebase();
-    }
-
-    endJourney() {
-        this.journeyStatus = 'ended';
-        this.updateJourneyStatusDisplay();
-        this.addLog(`Perjalanan selesai - Total: ${this.totalDistance.toFixed(3)} km`, 'info');
-        this.sendToFirebase();
-        
-        if (this.isOnline) {
-            this.syncWaypointsToServer();
-        }
-    }
-
-    reportIssue() {
-        const issues = [
-            'Mesin bermasalah', 'Ban bocor', 'Bahan bakar habis',
-            'Kecelakaan kecil', 'Lainnya'
-        ];
-        
-        const issue = prompt('Lapor masalah:\n' + issues.join('\n'));
-        if (issue) {
-            this.addLog(`Laporan: ${issue}`, 'warning');
-        }
-    }
-
-    // ===== CHAT SYSTEM =====
-    setupChatSystem() {
-        if (!this.driverData) return;
-        
-        this.chatRef = database.ref('/chat/' + this.driverData.unit);
-        this.chatRef.off();
-        
-        this.chatRef.on('child_added', (snapshot) => {
-            const message = snapshot.val();
-            if (message && message.id !== this.lastMessageId) {
-                this.handleNewMessage(message);
-            }
-        });
-        
-        this.chatInitialized = true;
-        this.addLog('Sistem chat aktif', 'success');
-    }
-
-    handleNewMessage(message) {
-        if (!message || message.sender === this.driverData.name) return;
-        
-        const messageExists = this.chatMessages.some(msg => 
-            msg.id === message.id || 
-            (msg.timestamp === message.timestamp && msg.sender === message.sender)
-        );
-        
-        if (messageExists) return;
-        
-        this.chatMessages.push(message);
-        
-        if (!this.isChatOpen || message.sender !== this.driverData.name) {
-            this.unreadCount++;
-        }
-        
-        this.updateChatUI();
-        
-        if (!this.isChatOpen && message.sender !== this.driverData.name) {
-            this.showChatNotification(message);
-        }
-        
-        this.playNotificationSound();
-    }
-
-    async sendMessage(messageText) {
-        if (!messageText.trim() || !this.chatRef || !this.driverData) return;
-        
-        const messageId = 'msg_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
-        
-        const messageData = {
-            id: messageId,
-            text: messageText.trim(),
-            sender: this.driverData.name,
-            unit: this.driverData.unit,
+        return {
+            driver: this.driverData?.name,
+            unit: this.driverData?.unit,
+            lat: parseFloat(this.lastPosition.lat.toFixed(6)),
+            lng: parseFloat(this.lastPosition.lng.toFixed(6)),
+            speed: parseFloat(this.currentSpeed.toFixed(1)),
+            accuracy: parseFloat(this.lastPosition.accuracy.toFixed(1)),
+            bearing: this.lastPosition.bearing ? parseFloat(this.lastPosition.bearing.toFixed(0)) : null,
             timestamp: new Date().toISOString(),
-            timeDisplay: new Date().toLocaleTimeString('id-ID', { 
-                hour: '2-digit', minute: '2-digit' 
-            }),
-            type: 'driver',
-            status: 'sent'
+            lastUpdate: new Date().toLocaleTimeString('id-ID'),
+            distance: parseFloat(this.totalDistance.toFixed(3)),
+            journeyStatus: this.journeyStatus,
+            batteryLevel: this.getBatteryLevel(),
+            sessionId: this.driverData?.sessionId,
+            fuel: this.calculateFuelLevel(),
+            gpsMode: 'real-time-enhanced',
+            processed: true,
+            confidence: this.lastPosition.confidence || 0.5,
+            dataQuality: 'high'
         };
-        
-        try {
-            await this.chatRef.push(messageData);
-            this.lastMessageId = messageId;
-            
-            this.chatMessages.push(messageData);
-            this.updateChatUI();
-            
-        } catch (error) {
-            console.error('Failed to send message:', error);
-            messageData.status = 'failed';
-            this.chatMessages.push(messageData);
-            this.updateChatUI();
-        }
-    }
-
-    sendChatMessage() {
-        const input = document.getElementById('chatInput');
-        if (input && input.value.trim()) {
-            this.sendMessage(input.value);
-            input.value = '';
-        }
-    }
-
-    updateChatUI() {
-        const messageList = document.getElementById('chatMessages');
-        const unreadBadge = document.getElementById('unreadBadge');
-        const chatToggle = document.getElementById('chatToggle');
-        
-        if (!messageList) return;
-        
-        if (unreadBadge) {
-            unreadBadge.textContent = this.unreadCount > 0 ? this.unreadCount : '';
-            unreadBadge.style.display = this.unreadCount > 0 ? 'inline' : 'none';
-        }
-        
-        if (chatToggle) {
-            chatToggle.innerHTML = this.unreadCount > 0 ? 
-                `💬 Chat <span class="badge bg-danger">${this.unreadCount}</span>` : 
-                '💬 Chat';
-        }
-        
-        messageList.innerHTML = '';
-        
-        if (this.chatMessages.length === 0) {
-            messageList.innerHTML = `
-                <div class="chat-placeholder text-center text-muted py-4">
-                    <small>Mulai percakapan dengan monitor...</small>
-                </div>
-            `;
-            return;
-        }
-        
-        this.chatMessages.forEach(message => {
-            const messageElement = this.createMessageElement(message);
-            messageList.appendChild(messageElement);
-        });
-        
-        messageList.scrollTop = messageList.scrollHeight;
-    }
-
-    createMessageElement(message) {
-        const messageElement = document.createElement('div');
-        const isSentMessage = message.sender === this.driverData.name;
-        
-        messageElement.className = `chat-message ${isSentMessage ? 'message-sent' : 'message-received'}`;
-        
-        messageElement.innerHTML = `
-            <div class="message-content ${message.status === 'failed' ? 'message-failed' : ''}">
-                ${!isSentMessage ? 
-                    `<div class="message-sender">${this.escapeHtml(message.sender)}</div>` : ''}
-                <div class="message-text">${this.escapeHtml(message.text)}</div>
-                <div class="message-footer">
-                    <span class="message-time">${message.timeDisplay}</span>
-                    ${isSentMessage ? 
-                        `<span class="message-status">${message.status === 'failed' ? '❌' : '✓'}</span>` : ''}
-                </div>
-            </div>
-        `;
-        
-        return messageElement;
-    }
-
-    toggleChat() {
-        this.isChatOpen = !this.isChatOpen;
-        const chatWindow = document.getElementById('chatWindow');
-        
-        if (chatWindow) {
-            chatWindow.style.display = this.isChatOpen ? 'flex' : 'none';
-            
-            if (this.isChatOpen) {
-                this.unreadCount = 0;
-                this.updateChatUI();
-                setTimeout(() => {
-                    const chatInput = document.getElementById('chatInput');
-                    if (chatInput) chatInput.focus();
-                }, 100);
-            }
-        }
-    }
-
-    showChatNotification(message) {
-        const notification = document.createElement('div');
-        notification.className = 'chat-notification alert alert-info';
-        notification.innerHTML = `
-            <div class="d-flex justify-content-between align-items-start">
-                <div>
-                    <strong>💬 Pesan Baru dari ${message.sender}</strong>
-                    <div class="small">${message.text}</div>
-                </div>
-                <button type="button" class="btn-close btn-sm" onclick="this.parentElement.parentElement.remove()"></button>
-            </div>
-        `;
-        
-        notification.style.cssText = `
-            position: fixed;
-            top: 20px;
-            right: 20px;
-            z-index: 9999;
-            min-width: 300px;
-            max-width: 400px;
-        `;
-        
-        document.body.appendChild(notification);
-        
-        setTimeout(() => {
-            if (notification.parentNode) {
-                notification.remove();
-            }
-        }, 5000);
-    }
-
-    playNotificationSound() {
-        try {
-            const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-            const oscillator = audioContext.createOscillator();
-            const gainNode = audioContext.createGain();
-            
-            oscillator.connect(gainNode);
-            gainNode.connect(audioContext.destination);
-            
-            oscillator.frequency.setValueAtTime(800, audioContext.currentTime);
-            oscillator.frequency.setValueAtTime(600, audioContext.currentTime + 0.1);
-            
-            gainNode.gain.setValueAtTime(0.3, audioContext.currentTime);
-            gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.2);
-            
-            oscillator.start(audioContext.currentTime);
-            oscillator.stop(audioContext.currentTime + 0.2);
-        } catch (error) {
-            console.log('Notification sound not supported');
-        }
-    }
-
-    escapeHtml(text) {
-        const div = document.createElement('div');
-        div.textContent = text;
-        return div.innerHTML;
-    }
-
-    // ===== DATA MANAGEMENT =====
-    loadUnsyncedWaypoints() {
-        const unsynced = this.storageManager.loadUnsyncedWaypoints();
-        unsynced.forEach(waypoint => {
-            this.waypointBuffer.push(waypoint);
-            if (!waypoint.synced) {
-                this.unsyncedWaypoints.add(waypoint.id);
-            }
-        });
-        console.log(`📂 Loaded ${unsynced.length} unsynced waypoints from storage`);
-    }
-
-    loadCompleteHistory() {
-        try {
-            const saved = localStorage.getItem('gps_complete_history');
-            return saved ? JSON.parse(saved) : [];
-        } catch (error) {
-            console.error('Error loading complete history:', error);
-            return [];
-        }
     }
 
     async syncWaypointsToServer() {
@@ -3081,7 +3797,18 @@ class EnhancedDTGPSLogger {
 
         for (const [index, batch] of batches.entries()) {
             try {
-                await this.uploadBatch(batch, index);
+                // Use enhanced retry manager for batch upload
+                await this.retryManager.scheduleRetry(
+                    { batch, batchIndex: index },
+                    'high',
+                    {
+                        type: 'waypoint_upload',
+                        operation: async (data) => {
+                            await this.uploadBatch(data.batch, data.batchIndex);
+                        }
+                    }
+                );
+                
                 successfulBatches++;
                 
                 batch.forEach(waypoint => {
@@ -3106,7 +3833,7 @@ class EnhancedDTGPSLogger {
     }
 
     async uploadBatch(batch, batchIndex) {
-        const batchId = `batch_${this.driverData.unit}_${Date.now()}_${batchIndex}`;
+        const batchId = `batch_${Date.now()}_${batchIndex}`;
         const batchRef = database.ref(`/waypoints/${this.driverData.unit}/batches/${batchId}`);
         
         const batchData = {
@@ -3117,16 +3844,16 @@ class EnhancedDTGPSLogger {
             waypoints: batch,
             uploadedAt: new Date().toISOString(),
             batchSize: batch.length,
-            totalWaypoints: this.waypointBuffer.count,
             batchIndex: batchIndex
         };
 
         await batchRef.set(batchData);
-        console.log(`✅ Batch ${batchIndex} uploaded: ${batch.length} waypoints`);
     }
 
+    // === IMPLEMENTASI METHOD-METHOD TAMBAHAN ===
+
     getUnsyncedWaypoints() {
-        return this.waypointBuffer.getAll().filter(wp => !wp.synced);
+        return this.storageManager.loadUnsyncedWaypoints();
     }
 
     createBatches(array, batchSize) {
@@ -3137,288 +3864,479 @@ class EnhancedDTGPSLogger {
         return batches;
     }
 
-    autoSaveSystemState() {
-        this.saveSystemState();
+    calculateDistance(lat1, lon1, lat2, lon2) {
+        const R = 6371; // Earth radius in kilometers
+        const dLat = (lat2 - lat1) * Math.PI / 180;
+        const dLon = (lon2 - lon1) * Math.PI / 180;
+        const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                  Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * 
+                  Math.sin(dLon/2) * Math.sin(dLon/2);
+        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+        return R * c;
     }
 
-    updatePerformanceMetrics() {
-        // Update performance metrics display
-        const perfElement = document.getElementById('performanceMetrics');
-        if (perfElement) {
-            perfElement.innerHTML = `
-                <small class="text-muted">
-                    GPS: ${this.performanceMetrics.gpsProcessingTime.toFixed(1)}ms | 
-                    Save: ${this.performanceMetrics.waypointSaveTime.toFixed(1)}ms | 
-                    Firebase: ${this.performanceMetrics.firebaseSendTime.toFixed(1)}ms
-                </small>
-            `;
+    getBatteryLevel() {
+        // Simulate battery level - in real implementation, use navigator.getBattery()
+        return Math.max(0.2, Math.min(1, Math.random() * 0.8 + 0.2));
+    }
+
+    calculateFuelLevel() {
+        // Simulate fuel level
+        return Math.max(0.1, Math.min(1, Math.random() * 0.9 + 0.1));
+    }
+
+    updateAllDisplays() {
+        this.updateTime();
+        this.updateDriverDisplay();
+        this.updateJourneyDisplay();
+        this.updateWaypointDisplay();
+        this.updatePerformanceDisplay();
+    }
+
+    updateTime() {
+        const now = new Date();
+        const timeElement = document.getElementById('currentTime');
+        if (timeElement) {
+            timeElement.textContent = now.toLocaleTimeString('id-ID');
         }
     }
 
-    // ===== ADDITIONAL FEATURES =====
-    refreshData() {
-        this.updateAllDisplays();
-        this.addLog('Data diperbarui manual', 'info');
-    }
-
-    clearLogs() {
-        const logContainer = document.getElementById('dataLogs');
-        if (logContainer) {
-            logContainer.innerHTML = '';
-            this.addLog('Logs dibersihkan', 'info');
+    updateDriverDisplay() {
+        const driverElement = document.getElementById('driverInfo');
+        if (driverElement && this.driverData) {
+            driverElement.textContent = `${this.driverData.name} - Unit ${this.driverData.unit}`;
         }
     }
 
-    exportData() {
-        const data = {
-            waypoints: this.waypointBuffer.getAll(),
-            sessionData: {
-                driver: this.driverData,
-                totalDistance: this.totalDistance,
-                dataPoints: this.dataPoints,
-                sessionDuration: document.getElementById('sessionDuration')?.textContent,
-                startTime: this.sessionStartTime
-            },
-            exportTime: new Date().toISOString()
-        };
-
-        const dataStr = JSON.stringify(data, null, 2);
-        const dataBlob = new Blob([dataStr], {type: 'application/json'});
-        const url = URL.createObjectURL(dataBlob);
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = `gps_data_${this.driverData?.unit || 'unknown'}_${new Date().toISOString().split('T')[0]}.json`;
-        link.click();
-        URL.revokeObjectURL(url);
-
-        this.addLog('Data diekspor', 'success');
-    }
-
-    showSettings() {
-        // Implementation for settings modal
-        alert('Settings feature akan diimplementasi');
-    }
-
-    showMaintenance() {
-        // Implementation for maintenance modal
-        alert('Maintenance feature akan diimplementasi');
-    }
-
-    emergencyStop() {
-        if (confirm('EMERGENCY STOP: Hentikan semua tracking?')) {
-            this.stopRealGPSTracking();
-            this.stopTracking();
-            this.journeyStatus = 'ended';
-            this.addLog('EMERGENCY STOP: Semua tracking dihentikan', 'error');
-        }
-    }
-
-    forceSync() {
-        this.addLog('Memaksa sinkronisasi data...', 'warning');
-        this.syncWaypointsToServer();
-        this.offlineQueue.processQueue();
-    }
-
-    handleResize() {
-        // Handle window resize for responsive design
-        console.log('Window resized:', window.innerWidth, 'x', window.innerHeight);
-    }
-
-    handleOrientationChange() {
-        // Handle orientation change for mobile devices
-        console.log('Orientation changed:', screen.orientation?.type || 'unknown');
-    }
-
-    // ===== VALIDATION METHODS =====
-    isValidCoordinate(lat, lng) {
-        if (lat < -90 || lat > 90 || lng < -180 || lng > 180) {
-            return false;
-        }
-        if (isNaN(lat) || isNaN(lng)) {
-            return false;
-        }
-        return true;
-    }
-
-    handleGPSError(error) {
-        let message = '';
-        let instructions = '';
+    updateJourneyDisplay() {
+        const statusElement = document.getElementById('journeyStatus');
+        const distanceElement = document.getElementById('totalDistance');
+        const speedElement = document.getElementById('currentSpeed');
         
-        switch(error.code) {
-            case error.PERMISSION_DENIED:
-                message = '❌ Izin GPS Ditolak';
-                instructions = '📱 Buka: Settings → Site Settings → Location → Allow';
-                break;
-            case error.POSITION_UNAVAILABLE:
-                message = '❌ GPS Device Tidak Aktif';
-                instructions = 'Aktifkan GPS/Lokasi di pengaturan device';
-                break;
-            case error.TIMEOUT:
-                message = '⏱️ Timeout GPS';
-                instructions = 'Cari area dengan sinyal lebih baik';
-                break;
-            default:
-                message = '❌ Error GPS Tidak Diketahui';
-                break;
+        if (statusElement) {
+            statusElement.textContent = this.journeyStatus.toUpperCase();
+            statusElement.className = `status-${this.journeyStatus}`;
         }
         
-        this.addLog(`${message} - ${instructions}`, 'error');
-        this.healthMetrics.errors++;
+        if (distanceElement) {
+            distanceElement.textContent = this.totalDistance.toFixed(2) + ' km';
+        }
+        
+        if (speedElement) {
+            speedElement.textContent = this.currentSpeed.toFixed(1) + ' km/h';
+        }
     }
 
-    stopTracking() {
-        if (this.watchId) {
-            navigator.geolocation.clearWatch(this.watchId);
+    updateWaypointDisplay() {
+        const waypointElement = document.getElementById('waypointCount');
+        const unsyncedElement = document.getElementById('unsyncedCount');
+        
+        if (waypointElement) {
+            waypointElement.textContent = this.dataPoints.toString();
         }
-        if (this.sendInterval) {
-            clearInterval(this.sendInterval);
+        
+        if (unsyncedElement) {
+            unsyncedElement.textContent = this.unsyncedWaypoints.size.toString();
         }
-        if (this.syncInterval) {
-            clearInterval(this.syncInterval);
-        }
-        if (this.healthCheckInterval) {
-            clearInterval(this.healthCheckInterval);
-        }
-        if (this.firebaseRef) {
-            this.firebaseRef.remove();
-        }
-        this.isTracking = false;
-        console.log('🛑 All tracking stopped');
     }
 
-    // ===== ENHANCED LOGOUT WITH AUTO-CLEANUP =====
-    async logout() {
-        if (confirm('Yakin ingin logout? Semua data Firebase untuk unit ini akan dihapus.')) {
-            try {
-                // Sync terakhir jika online
-                if (this.isOnline) {
-                    await this.syncWaypointsToServer();
-                    await this.offlineQueue.processQueue();
-                }
-                
-                // Stop semua tracking
-                this.stopRealGPSTracking();
-                this.stopTracking();
-                
-                // Schedule Firebase cleanup
-                if (this.driverData && this.driverData.unit && this.driverData.sessionId) {
-                    await this.cleanupManager.scheduleCleanup(this.driverData.unit, this.driverData.sessionId);
-                }
-                
-                // Reset semua enhanced components
-                this.gpsProcessor.reset();
-                this.speedCalculator.reset();
-                this.kalmanFilter.reset();
-                
-                // Clear system state
-                this.storageManager.clearSystemState();
-                
-                // Session summary
-                const sessionSummary = {
-                    driver: this.driverData?.name,
-                    unit: this.driverData?.unit,
-                    duration: document.getElementById('sessionDuration')?.textContent || '00:00:00',
-                    totalDistance: this.totalDistance.toFixed(3),
-                    dataPoints: this.dataPoints,
-                    waypointsCollected: this.waypointBuffer.count,
-                    unsyncedWaypoints: this.unsyncedWaypoints.size,
-                    avgSpeed: document.getElementById('avgSpeed')?.textContent || '0',
-                    sessionId: this.driverData?.sessionId,
-                    cleanupScheduled: true,
-                    healthMetrics: this.healthMetrics
-                };
-                
-                console.log('Session Summary:', sessionSummary);
-                this.addLog(`Session ended - ${this.waypointBuffer.count} waypoints collected - Firebase cleanup scheduled`, 'info');
-                
-                // Clear local data
-                this.waypointBuffer.clear();
-                this.unsyncedWaypoints.clear();
-                
-                // Reset state
-                this.driverData = null;
-                this.firebaseRef = null;
-                this.chatRef = null;
-                this.chatMessages = [];
-                this.unreadCount = 0;
-                this.isChatOpen = false;
-                this.chatInitialized = false;
-                
-                // Show login screen
-                const loginScreen = document.getElementById('loginScreen');
-                const driverApp = document.getElementById('driverApp');
-                const loginForm = document.getElementById('loginForm');
-                
-                if (loginScreen) loginScreen.style.display = 'block';
-                if (driverApp) driverApp.style.display = 'none';
-                if (loginForm) loginForm.reset();
-                
-                // Reset metrics
-                this.totalDistance = 0;
-                this.dataPoints = 0;
-                this.lastPosition = null;
-                this.lastUpdateTime = null;
-                this.currentSpeed = 0;
-                this.journeyStatus = 'ready';
-                
-                // Reset health metrics
-                this.healthMetrics = {
-                    gpsUpdates: 0,
-                    waypointSaves: 0,
-                    firebaseSends: 0,
-                    errors: 0,
-                    recoveryAttempts: 0,
-                    startTime: new Date(),
-                    lastHealthCheck: new Date()
-                };
-                
-                this.addLog('✅ Logout berhasil - Data Firebase dijadwalkan untuk cleanup', 'success');
-                
-            } catch (error) {
-                console.error('Error during logout:', error);
-                this.addLog('❌ Error during logout, but local data cleared', 'error');
+    updatePerformanceDisplay() {
+        const performanceElement = document.getElementById('performanceMetrics');
+        if (performanceElement) {
+            performanceElement.textContent = 
+                `GPS: ${this.healthMetrics.gpsUpdates} | ` +
+                `Saves: ${this.healthMetrics.waypointSaves} | ` +
+                `Sends: ${this.healthMetrics.firebaseSends} | ` +
+                `Errors: ${this.healthMetrics.errors}`;
+        }
+    }
+
+    addLog(message, type = 'info') {
+        const logElement = document.getElementById('systemLog');
+        if (!logElement) return;
+
+        const logEntry = document.createElement('div');
+        logEntry.className = `log-entry log-${type}`;
+        logEntry.innerHTML = `
+            <span class="log-time">[${new Date().toLocaleTimeString('id-ID')}]</span>
+            <span class="log-message">${message}</span>
+        `;
+
+        logElement.appendChild(logEntry);
+        logElement.scrollTop = logElement.scrollHeight;
+
+        // Keep only last 100 log entries
+        const entries = logElement.getElementsByClassName('log-entry');
+        if (entries.length > 100) {
+            entries[0].remove();
+        }
+
+        console.log(`📝 [${type.toUpperCase()}] ${message}`);
+    }
+
+    checkNetworkStatus() {
+        const wasOnline = this.isOnline;
+        this.isOnline = navigator.onLine;
+        
+        if (wasOnline !== this.isOnline) {
+            this.offlineQueue.updateOnlineStatus(this.isOnline);
+            this.updateConnectionStatus(this.isOnline);
+            
+            if (this.isOnline) {
+                this.addLog('Koneksi internet tersedia', 'success');
+                // Trigger immediate sync when coming online
+                setTimeout(() => {
+                    this.syncWaypointsToServer();
+                    this.offlineQueue.processQueue();
+                }, 1000);
+            } else {
+                this.addLog('Koneksi internet terputus', 'warning');
             }
         }
     }
 
-    // ===== SYSTEM DIAGNOSTICS =====
-    getSystemDiagnostics() {
+    updateConnectionStatus(online) {
+        const statusElement = document.getElementById('connectionStatus');
+        if (statusElement) {
+            statusElement.textContent = online ? 'ONLINE' : 'OFFLINE';
+            statusElement.className = online ? 'status-online' : 'status-offline';
+        }
+    }
+
+    updateSessionDuration() {
+        if (!this.sessionStartTime) return;
+        
+        const durationElement = document.getElementById('sessionDuration');
+        if (durationElement) {
+            const now = new Date();
+            const diff = now - this.sessionStartTime;
+            const hours = Math.floor(diff / 3600000);
+            const minutes = Math.floor((diff % 3600000) / 60000);
+            const seconds = Math.floor((diff % 60000) / 1000);
+            
+            durationElement.textContent = 
+                `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+        }
+    }
+
+    healthCheck() {
+        this.healthMetrics.lastHealthCheck = new Date();
+        
+        // Check GPS status
+        if (this.isTracking && this.healthMetrics.gpsUpdates === 0) {
+            this.addLog('Peringatan: Tidak ada update GPS', 'warning');
+        }
+        
+        // Check storage health
+        const storageHealth = this.storageManager.checkStorageHealth();
+        if (storageHealth === 'critical') {
+            this.addLog('Peringatan: Storage hampir penuh', 'error');
+        }
+        
+        // Check retry queue health
+        const retryHealth = this.retryManager.getRetryHealth();
+        if (retryHealth === 'critical') {
+            this.addLog('Peringatan: Banyak operasi tertunda', 'warning');
+        }
+    }
+
+    updatePerformanceMetrics() {
+        const now = new Date();
+        this.performanceMetrics.totalUptime = now - this.healthMetrics.startTime;
+    }
+
+    autoSaveSystemState() {
+        this.saveSystemState();
+    }
+
+    saveSystemState() {
+        const systemState = {
+            driverData: this.driverData,
+            journeyStatus: this.journeyStatus,
+            totalDistance: this.totalDistance,
+            dataPoints: this.dataPoints,
+            lastPosition: this.lastPosition,
+            sessionStartTime: this.sessionStartTime,
+            healthMetrics: this.healthMetrics,
+            performanceMetrics: this.performanceMetrics,
+            savedAt: new Date().toISOString()
+        };
+
+        this.storageManager.saveSystemState(systemState);
+    }
+
+    loadSystemState() {
+        const savedState = this.storageManager.loadSystemState();
+        if (savedState) {
+            this.driverData = savedState.driverData;
+            this.journeyStatus = savedState.journeyStatus;
+            this.totalDistance = savedState.totalDistance || 0;
+            this.dataPoints = savedState.dataPoints || 0;
+            this.lastPosition = savedState.lastPosition;
+            this.sessionStartTime = savedState.sessionStartTime ? new Date(savedState.sessionStartTime) : null;
+            this.healthMetrics = { ...this.healthMetrics, ...savedState.healthMetrics };
+            this.performanceMetrics = { ...this.performanceMetrics, ...savedState.performanceMetrics };
+            
+            console.log('✅ System state loaded from storage');
+            this.addLog('State sistem dipulihkan dari penyimpanan', 'success');
+        }
+    }
+
+    loadUnsyncedWaypoints() {
+        const unsynced = this.storageManager.loadUnsyncedWaypoints();
+        unsynced.forEach(waypoint => {
+            this.unsyncedWaypoints.add(waypoint.id);
+        });
+        console.log(`📋 Loaded ${unsynced.length} unsynced waypoints from storage`);
+    }
+
+    loadCompleteHistory() {
+        return this.storageManager.loadAllWaypoints();
+    }
+
+    getSystemState() {
         return {
-            app: {
-                version: '2.0.0',
-                uptime: this.performanceMetrics.totalUptime,
-                journeyStatus: this.journeyStatus,
-                isTracking: this.isTracking,
-                isOnline: this.isOnline
-            },
-            gps: {
-                isActive: this.isTracking,
-                lastPosition: this.lastPosition,
-                currentSpeed: this.currentSpeed,
-                quality: this.gpsProcessor.getQualityMetrics(),
-                recoveryAttempts: this.recoveryAttempts
-            },
-            data: {
-                totalDistance: this.totalDistance,
-                dataPoints: this.dataPoints,
-                waypoints: this.waypointBuffer.getStats(),
-                storage: this.storageManager.getStorageStatistics()
-            },
-            network: {
-                status: this.isOnline ? 'online' : 'offline',
-                offlineQueue: this.offlineQueue.getQueueStats(),
-                cleanupQueue: this.cleanupManager.getQueueStatus()
-            },
-            performance: this.performanceMetrics,
-            health: this.healthMetrics,
-            recovery: this.resumeManager.getRecoveryStats()
+            driverData: this.driverData,
+            journeyStatus: this.journeyStatus,
+            totalDistance: this.totalDistance,
+            dataPoints: this.dataPoints,
+            lastPosition: this.lastPosition,
+            sessionStartTime: this.sessionStartTime,
+            healthMetrics: this.healthMetrics,
+            performanceMetrics: this.performanceMetrics,
+            isOnline: this.isOnline,
+            isTracking: this.isTracking,
+            currentSpeed: this.currentSpeed,
+            timestamp: new Date().toISOString()
         };
     }
 
+    getAnalyticsData() {
+        return {
+            gpsProcessor: this.gpsProcessor.getQualityMetrics(),
+            speedCalculator: this.speedCalculator.getSpeedMetrics(),
+            storage: this.storageManager.getEnhancedStorageStatistics(),
+            retry: this.retryManager.getQueueStats(),
+            sync: this.syncManager.getSyncAnalytics(),
+            resume: this.resumeManager.getRecoveryStats(),
+            health: this.healthMetrics,
+            performance: this.performanceMetrics,
+            collectedAt: new Date().toISOString()
+        };
+    }
+
+    recoverFromBackground() {
+        console.log('🔄 Recovering from background state...');
+        
+        // Reset components that might have stale state
+        this.gpsProcessor.reset();
+        this.speedCalculator.reset();
+        
+        // Force refresh of all data
+        this.updateAllDisplays();
+        
+        // Sync any pending data
+        if (this.isOnline) {
+            setTimeout(() => {
+                this.syncWaypointsToServer();
+                this.offlineQueue.processQueue();
+            }, 2000);
+        }
+        
+        this.addLog('Sistem dipulihkan dari background state', 'success');
+    }
+
+    // === IMPLEMENTASI METHOD CHAT ===
+
+    toggleChat() {
+        this.isChatOpen = !this.isChatOpen;
+        const chatPanel = document.getElementById('chatPanel');
+        
+        if (chatPanel) {
+            if (this.isChatOpen) {
+                chatPanel.classList.remove('hidden');
+                this.initializeChat();
+                this.loadChatMessages();
+            } else {
+                chatPanel.classList.add('hidden');
+            }
+        }
+    }
+
+    initializeChat() {
+        if (this.chatInitialized || !this.chatRef) return;
+
+        this.chatRef.on('child_added', (snapshot) => {
+            const message = snapshot.val();
+            this.displayChatMessage(message);
+        });
+
+        this.chatInitialized = true;
+        console.log('💬 Chat system initialized');
+    }
+
+    displayChatMessage(message) {
+        const chatMessages = document.getElementById('chatMessages');
+        if (!chatMessages) return;
+
+        const messageElement = document.createElement('div');
+        messageElement.className = `chat-message ${message.sender === 'system' ? 'system-message' : 'user-message'}`;
+        messageElement.innerHTML = `
+            <div class="message-sender">${message.sender}</div>
+            <div class="message-text">${message.text}</div>
+            <div class="message-time">${new Date(message.timestamp).toLocaleTimeString('id-ID')}</div>
+        `;
+
+        chatMessages.appendChild(messageElement);
+        chatMessages.scrollTop = chatMessages.scrollHeight;
+
+        // Update unread count if chat is closed
+        if (!this.isChatOpen && message.sender !== 'system') {
+            this.unreadCount++;
+            this.updateChatBadge();
+        }
+    }
+
+    updateChatBadge() {
+        const chatBadge = document.getElementById('chatBadge');
+        if (chatBadge) {
+            chatBadge.textContent = this.unreadCount > 0 ? this.unreadCount.toString() : '';
+            chatBadge.style.display = this.unreadCount > 0 ? 'block' : 'none';
+        }
+    }
+
+    async sendChatMessage() {
+        const chatInput = document.getElementById('chatInput');
+        if (!chatInput || !chatInput.value.trim() || !this.chatRef) return;
+
+        const messageText = chatInput.value.trim();
+        const message = {
+            text: messageText,
+            sender: this.driverData?.name || 'Unknown',
+            timestamp: new Date().toISOString(),
+            unit: this.driverData?.unit,
+            synced: true
+        };
+
+        try {
+            await this.chatRef.push().set(message);
+            chatInput.value = '';
+            
+            // Also add to local messages for immediate display
+            this.displayChatMessage(message);
+            this.chatMessages.push(message);
+            
+        } catch (error) {
+            console.error('❌ Failed to send chat message:', error);
+            this.addLog('Gagal mengirim pesan chat', 'error');
+        }
+    }
+
+    loadChatMessages() {
+        // Clear unread count when opening chat
+        this.unreadCount = 0;
+        this.updateChatBadge();
+    }
+
+    // === IMPLEMENTASI METHOD TAMBAHAN ===
+
+    reportIssue() {
+        const issue = prompt('Deskripsikan masalah yang ditemukan:');
+        if (issue) {
+            this.addLog(`Laporan masalah: ${issue}`, 'warning');
+            // In real implementation, send this to server
+        }
+    }
+
+    logout() {
+        // Stop all activities
+        this.stopRealGPSTracking();
+        this.stopDataTransmission();
+        
+        // Save final state
+        this.saveSystemState();
+        
+        // Reset state
+        this.driverData = null;
+        this.journeyStatus = 'ready';
+        this.sessionStartTime = null;
+        this.totalDistance = 0;
+        this.dataPoints = 0;
+        this.lastPosition = null;
+        
+        // Show login screen
+        document.getElementById('loginScreen').classList.remove('hidden');
+        document.getElementById('mainInterface').classList.add('hidden');
+        
+        this.addLog('Logout berhasil', 'success');
+    }
+
+    refreshData() {
+        this.updateAllDisplays();
+        this.addLog('Data diperbarui', 'info');
+    }
+
+    clearLogs() {
+        const logElement = document.getElementById('systemLog');
+        if (logElement) {
+            logElement.innerHTML = '';
+        }
+        this.addLog('Logs dibersihkan', 'info');
+    }
+
+    exportData() {
+        this.storageManager.exportData();
+        this.addLog('Data diekspor', 'success');
+    }
+
+    showSettings() {
+        alert('Settings panel akan ditampilkan di sini');
+        // Implementation for settings dialog
+    }
+
+    showMaintenance() {
+        alert('Maintenance panel akan ditampilkan di sini');
+        // Implementation for maintenance operations
+    }
+
+    emergencyStop() {
+        this.stopRealGPSTracking();
+        this.stopDataTransmission();
+        this.journeyStatus = 'ended';
+        
+        this.addLog('EMERGENCY STOP - Semua aktivitas dihentikan', 'error');
+        this.updateJourneyDisplay();
+    }
+
+    forceSync() {
+        this.syncManager.forceSync();
+        this.addLog('Sinkronisasi paksa dimulai', 'info');
+    }
+
+    handleResize() {
+        // Handle window resize if needed
+        console.log('Window resized');
+    }
+
+    handleOrientationChange() {
+        // Handle orientation change if needed
+        console.log('Orientation changed');
+    }
+
     printDiagnostics() {
-        const diagnostics = this.getSystemDiagnostics();
-        console.log('🩺 System Diagnostics:', diagnostics);
-        return diagnostics;
+        console.group('🚀 GPS Logger Diagnostics');
+        console.log('Driver Data:', this.driverData);
+        console.log('Journey Status:', this.journeyStatus);
+        console.log('Tracking:', this.isTracking);
+        console.log('Online:', this.isOnline);
+        console.log('Total Distance:', this.totalDistance);
+        console.log('Data Points:', this.dataPoints);
+        console.log('Unsynced Waypoints:', this.unsyncedWaypoints.size);
+        console.log('Health Metrics:', this.healthMetrics);
+        console.log('Enhanced System Status:', this.getEnhancedSystemStatus());
+        console.groupEnd();
+        
+        return this.getEnhancedSystemStatus();
     }
 }
 
@@ -3432,6 +4350,7 @@ document.addEventListener('DOMContentLoaded', function() {
         
         // Expose diagnostics for debugging
         window.getGPSDiagnostics = () => window.dtLogger?.printDiagnostics();
+        window.getEnhancedStatus = () => window.dtLogger?.getEnhancedSystemStatus();
         
     } catch (error) {
         console.error('❌ Failed to initialize GPS Tracker:', error);
@@ -3465,4 +4384,4 @@ if ('serviceWorker' in navigator) {
         });
 }
 
-console.log('🎉 script-mobile.js loaded successfully');
+console.log('🎉 script-mobile.js loaded successfully with ENHANCED features!');
