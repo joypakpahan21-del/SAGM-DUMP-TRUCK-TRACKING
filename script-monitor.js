@@ -137,7 +137,7 @@ class AdvancedSAGMGpsTracking {
 
         this.config = {
             center: [
-                (this.importantLocations.PKS_SAGM.lat + this.importantLocations.KANTOR_KEBUN.lat) / 2,
+                (this.importantLocations.PKS_SAGM.lat + this.importantLocations.KANTOR_KEBUN.lng) / 2,
                 (this.importantLocations.PKS_SAGM.lng + this.importantLocations.KANTOR_KEBUN.lng) / 2
             ],
             zoom: 13
@@ -157,15 +157,33 @@ class AdvancedSAGMGpsTracking {
             this.setupDataLogger();
             this.testFirebaseConnection();
             
-            // Initialize analytics systems
-            this.analyticsEngine.initialize();
-            this.geofencingManager.initialize();
-            this.violationDetector.initialize();
-            this.fuelMonitor.initialize();
-            this.performanceManager.initialize();
-            this.heatmapManager.initialize();
-            this.maintenancePredictor.initialize();
-            this.notificationSystem.initialize();
+            // ✅ FIX: Initialize analytics systems dengan error handling yang lebih baik
+            const systems = [
+                { name: 'Analytics Engine', instance: this.analyticsEngine },
+                { name: 'Geofencing Manager', instance: this.geofencingManager },
+                { name: 'Violation Detector', instance: this.violationDetector },
+                { name: 'Fuel Monitor', instance: this.fuelMonitor },
+                { name: 'Performance Manager', instance: this.performanceManager },
+                { name: 'Heatmap Manager', instance: this.heatmapManager },
+                { name: 'Maintenance Predictor', instance: this.maintenancePredictor },
+                { name: 'Notification System', instance: this.notificationSystem }
+            ];
+
+            systems.forEach(system => {
+                try {
+                    if (system.instance && typeof system.instance.initialize === 'function') {
+                        system.instance.initialize();
+                        console.log(`✅ ${system.name} initialized successfully`);
+                    } else {
+                        console.warn(`⚠️ ${system.name} not available or missing initialize method`);
+                    }
+                } catch (error) {
+                    console.error(`❌ ${system.name} initialization failed:`, error);
+                    this.logData(`${system.name} gagal diinisialisasi`, 'warning', {
+                        error: error.message
+                    });
+                }
+            });
             
             // Setup chat system
             this.setupMonitorChatSystem();
@@ -173,10 +191,227 @@ class AdvancedSAGMGpsTracking {
             
             setTimeout(() => this.showDebugPanel(), 2000);
             
+            console.log('🎉 Advanced GPS Analytics System fully initialized');
+            
         } catch (error) {
             console.error('System initialization failed:', error);
-            this.displayError('Gagal memulai sistem GPS Analytics');
+            this.displayError('Gagal memulai sistem GPS Analytics - beberapa fitur mungkin tidak tersedia');
+            
+            // ✅ FIX: Tetap lanjutkan dengan fitur dasar meski ada error
+            this.logData('System initialization partially failed, continuing with basic features', 'error', {
+                error: error.message
+            });
         }
+    }
+
+    // ===== ENHANCED CHAT SYSTEM METHODS =====
+    
+    // ✅ PERBAIKI: Terima semua pesan dari driver, bukan hanya type 'monitor'
+    handleMonitorChatMessage(unitName, message) {
+        if (!message || !message.text) return; // Skip invalid messages
+        
+        // ✅ TERIMA SEMUA PESAN DARI DRIVER (type !== 'monitor')
+        if (message.type === 'monitor') return; // Skip our own messages
+        
+        if (!this.monitorChatMessages.has(unitName)) {
+            this.monitorChatMessages.set(unitName, []);
+        }
+        
+        const messages = this.monitorChatMessages.get(unitName);
+        
+        // Check for duplicate messages
+        const messageExists = messages.some(msg => 
+            msg.id === message.id || 
+            (msg.timestamp === message.timestamp && msg.sender === message.sender)
+        );
+        
+        if (messageExists) return;
+        
+        // ✅ TAMBAH PESAN BARU DARI DRIVER
+        messages.push(message);
+        
+        // Update unread count jika chat tidak aktif
+        if (this.activeChatUnit !== unitName) {
+            const currentCount = this.monitorUnreadCounts.get(unitName) || 0;
+            this.monitorUnreadCounts.set(unitName, currentCount + 1);
+        }
+        
+        this.updateMonitorChatUI();
+        this.updateMonitorChatUnitSelect();
+        
+        // Show notification jika tidak sedang chat dengan unit tersebut
+        if (this.activeChatUnit !== unitName) {
+            this.showMonitorChatNotification(unitName, message);
+        }
+        
+        console.log(`💬 New message from ${unitName}:`, message);
+        this.logData(`Pesan baru dari ${unitName}: ${message.text}`, 'info');
+    }
+
+    // ✅ PERBAIKI: Method untuk kirim pesan dari monitor ke driver
+    async sendMonitorMessage() {
+        const messageInput = document.getElementById('monitorChatInput');
+        const messageText = messageInput?.value.trim();
+        
+        if (!messageText || !this.activeChatUnit) {
+            alert('Pilih unit dan ketik pesan terlebih dahulu!');
+            return;
+        }
+        
+        if (!this.monitorChatRefs.has(this.activeChatUnit)) {
+            alert(`Tidak dapat terhubung dengan ${this.activeChatUnit}`);
+            return;
+        }
+        
+        const messageId = 'msg_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+        
+        const messageData = {
+            id: messageId,
+            text: messageText,
+            sender: 'MONITOR',
+            unit: this.activeChatUnit,
+            timestamp: new Date().toISOString(),
+            timeDisplay: new Date().toLocaleTimeString('id-ID', { 
+                hour: '2-digit', 
+                minute: '2-digit' 
+            }),
+            type: 'monitor', // ✅ TANDAI SEBAGAI PESAN DARI MONITOR
+            status: 'sent'
+        };
+        
+        try {
+            const chatRef = this.monitorChatRefs.get(this.activeChatUnit);
+            await chatRef.push(messageData);
+            
+            // ✅ TAMBAH PESAN KE LOCAL MESSAGES
+            if (!this.monitorChatMessages.has(this.activeChatUnit)) {
+                this.monitorChatMessages.set(this.activeChatUnit, []);
+            }
+            this.monitorChatMessages.get(this.activeChatUnit).push(messageData);
+            
+            this.updateMonitorChatUI();
+            this.logData(`💬 Pesan ke ${this.activeChatUnit}: "${messageText}"`, 'success');
+            
+            if (messageInput) messageInput.value = '';
+            this.stopMonitorTyping();
+            
+        } catch (error) {
+            console.error('Failed to send monitor message:', error);
+            this.logData('❌ Gagal mengirim pesan ke driver', 'error');
+            alert('Gagal mengirim pesan. Coba lagi.');
+        }
+    }
+
+    // ✅ PERBAIKI: Tampilkan semua pesan dengan format yang benar
+    createMonitorMessageElement(message) {
+        const messageElement = document.createElement('div');
+        const isMonitorMessage = message.type === 'monitor';
+        
+        messageElement.className = `chat-message ${isMonitorMessage ? 'message-sent' : 'message-received'}`;
+        
+        messageElement.innerHTML = `
+            <div class="message-content">
+                ${!isMonitorMessage ? 
+                    `<div class="message-sender">${this.escapeHtml(message.sender)} (${message.unit || 'Driver'})</div>` : 
+                    `<div class="message-sender">Anda (MONITOR)</div>`}
+                <div class="message-text">${this.escapeHtml(message.text)}</div>
+                <div class="message-footer">
+                    <span class="message-time">${message.timeDisplay || new Date(message.timestamp).toLocaleTimeString('id-ID')}</span>
+                    ${isMonitorMessage ? 
+                        `<span class="message-status">✓</span>` : ''}
+                </div>
+            </div>
+        `;
+        
+        return messageElement;
+    }
+
+    // ✅ METHOD BARU: Baca semua pesan history dari Firebase
+    async loadChatHistory(unitName) {
+        try {
+            const chatRef = database.ref('/chat/' + unitName);
+            const snapshot = await chatRef.once('value');
+            const chatData = snapshot.val();
+            
+            if (!chatData) return;
+            
+            this.monitorChatMessages.set(unitName, []);
+            
+            Object.values(chatData).forEach(message => {
+                if (message && message.text) {
+                    this.monitorChatMessages.get(unitName).push(message);
+                }
+            });
+            
+            // Sort messages by timestamp
+            const messages = this.monitorChatMessages.get(unitName);
+            messages.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+            
+            this.updateMonitorChatUI();
+            
+        } catch (error) {
+            console.error(`Failed to load chat history for ${unitName}:`, error);
+        }
+    }
+
+    // ✅ METHOD BARU: Clear unread messages
+    clearUnreadMessages(unitName) {
+        if (this.monitorUnreadCounts.has(unitName)) {
+            this.monitorUnreadCounts.set(unitName, 0);
+            this.updateMonitorChatUnitSelect();
+        }
+    }
+
+    // ✅ PERBAIKI: Saat pilih unit, load history dan clear unread
+    selectChatUnit(unitName) {
+        if (unitName === this.activeChatUnit) return;
+        
+        this.stopMonitorTyping();
+        this.activeChatUnit = unitName;
+        
+        // Clear unread count
+        this.clearUnreadMessages(unitName);
+        
+        // Load chat history
+        this.loadChatHistory(unitName);
+        
+        this.updateMonitorChatUI();
+        this.updateMonitorChatUnitSelect();
+        
+        const chatInput = document.getElementById('monitorChatInput');
+        if (chatInput) {
+            setTimeout(() => {
+                chatInput.focus();
+                chatInput.select();
+            }, 150);
+        }
+        
+        console.log(`💬 Now chatting with unit: ${unitName}`);
+        this.logData(`Memulai chat dengan unit ${unitName}`, 'info');
+    }
+
+    // ✅ METHOD BARU: Validasi koneksi chat
+    validateChatConnection(unitName) {
+        if (!this.monitorChatRefs.has(unitName)) {
+            console.warn(`No chat listener for ${unitName}`);
+            return false;
+        }
+        
+        if (!this.monitorChatMessages.has(unitName)) {
+            this.monitorChatMessages.set(unitName, []);
+        }
+        
+        return true;
+    }
+
+    // ✅ METHOD BARU: Get chat status
+    getChatStatus(unitName) {
+        return {
+            hasListener: this.monitorChatRefs.has(unitName),
+            messageCount: this.monitorChatMessages.get(unitName)?.length || 0,
+            unreadCount: this.monitorUnreadCounts.get(unitName) || 0,
+            isActive: this.activeChatUnit === unitName
+        };
     }
 
     // ===== ENHANCED FIREBASE METHODS =====
@@ -200,18 +435,36 @@ class AdvancedSAGMGpsTracking {
             });
             this.firebaseListeners.set('connection', connectionListener);
 
+            // ✅ FIX: Improved units listener dengan better error handling
             const unitsListener = database.ref('/units').on('value', 
                 (snapshot) => {
                     try {
                         const data = snapshot.val();
-                        if (data) {
+                        console.log(`📥 Raw Firebase data received:`, data);
+                        
+                        if (data && typeof data === 'object') {
                             this.debouncedProcessRealTimeData(data);
                         } else {
-                            console.log('⚠️ No data received from Firebase');
+                            console.log('⚠️ No valid data received from Firebase');
+                            this.logData('Empty or invalid Firebase data', 'warning');
                         }
                     } catch (processError) {
-                        console.error('❌ Error processing data:', processError);
-                        this.logData('Data processing error', 'error', { error: processError.message });
+                        console.error('❌ Error processing Firebase data:', processError);
+                        this.logData('Firebase data processing error', 'error', { 
+                            error: processError.message,
+                            stack: processError.stack
+                        });
+                        
+                        // Coba proses ulang dengan data mentah
+                        try {
+                            const rawData = snapshot.val();
+                            if (rawData) {
+                                console.log('🔄 Retrying with raw data processing...');
+                                this.processRealTimeData(rawData);
+                            }
+                        } catch (retryError) {
+                            console.error('❌ Retry also failed:', retryError);
+                        }
                     }
                 }, 
                 (error) => {
@@ -221,10 +474,11 @@ class AdvancedSAGMGpsTracking {
                         code: error.code
                     });
                     
+                    // Auto-retry connection
                     setTimeout(() => {
                         console.log('🔄 Retrying Firebase connection...');
                         this.connectToFirebase();
-                    }, 3000);
+                    }, 5000);
                 }
             );
             this.firebaseListeners.set('units', unitsListener);
@@ -238,8 +492,16 @@ class AdvancedSAGMGpsTracking {
             
         } catch (error) {
             console.error('🔥 Critical Firebase error:', error);
-            this.logData('Critical Firebase error', 'error', { error: error.message });
-            setTimeout(() => this.connectToFirebase(), 5000);
+            this.logData('Critical Firebase connection error', 'error', { 
+                error: error.message,
+                stack: error.stack
+            });
+            
+            // Retry connection after delay
+            setTimeout(() => {
+                console.log('🔄 Retrying Firebase connection after error...');
+                this.connectToFirebase();
+            }, 10000);
         }
     }
 
@@ -270,9 +532,14 @@ class AdvancedSAGMGpsTracking {
         });
 
         Object.entries(firebaseData).forEach(([unitName, unitData]) => {
+            // ✅ FIX: Enhanced data validation and correction
             if (!this.validateUnitData(unitName, unitData)) {
-                this.correctUnitData(unitName, unitData);
-                return;
+                const correctedData = this.correctUnitData(unitName, unitData);
+                if (!correctedData) {
+                    console.log(`❌ Skipping invalid data for ${unitName}`);
+                    return; // Skip unit jika data tidak bisa dikoreksi
+                }
+                unitData = correctedData; // Gunakan data yang sudah dikoreksi
             }
 
             activeUnits.add(unitName);
@@ -305,6 +572,8 @@ class AdvancedSAGMGpsTracking {
                     if (!this.monitorChatRefs.has(unitName)) {
                         this.setupUnitChatListener(unitName);
                     }
+                    
+                    console.log(`✅ New unit created: ${unitName}`);
                 }
             }
         });
@@ -317,44 +586,102 @@ class AdvancedSAGMGpsTracking {
 
     // ===== ENHANCED UNIT CREATION WITH ANALYTICS =====
     createNewUnit(unitName, firebaseData) {
-        if (!this.validateUnitData(unitName, firebaseData)) return null;
+        if (!firebaseData) {
+            console.log(`❌ No firebase data for unit ${unitName}`);
+            return null;
+        }
 
-        const unit = {
-            id: this.getUnitId(unitName),
-            name: unitName,
-            afdeling: this.determineAfdeling(unitName),
-            status: this.determineStatus(firebaseData.journeyStatus),
-            latitude: parseFloat(firebaseData.lat),
-            longitude: parseFloat(firebaseData.lng),
-            speed: parseFloat(firebaseData.speed) || 0,
-            lastUpdate: firebaseData.lastUpdate || new Date().toLocaleTimeString('id-ID'),
-            distance: parseFloat(firebaseData.distance) || 0,
-            fuelLevel: this.computeFuelLevel(100, firebaseData.distance, firebaseData.journeyStatus),
-            fuelUsed: this.computeFuelUsage(firebaseData.distance, firebaseData.journeyStatus),
-            driver: firebaseData.driver || 'Unknown',
-            accuracy: parseFloat(firebaseData.accuracy) || 0,
-            batteryLevel: firebaseData.batteryLevel || null,
-            lastLat: parseFloat(firebaseData.lat),
-            lastLng: parseFloat(firebaseData.lng),
-            isOnline: true,
-            sessionId: firebaseData.sessionId,
-            lastFuelUpdate: Date.now(),
-            
-            // Analytics fields
-            analytics: {
-                performanceScore: 75, // Default score
-                efficiency: 0,
-                violations: [],
-                dailyDistance: 0,
-                idleTime: 0,
-                fuelEfficiency: 0,
-                lastScoreUpdate: Date.now(),
-                zoneEntries: [],
-                maintenanceAlerts: []
+        // ✅ FIX: Enhanced validation dengan fallback values
+        try {
+            const validatedData = this.validateAndSanitizeUnitData(unitName, firebaseData);
+            if (!validatedData) {
+                console.log(`❌ Invalid data for unit ${unitName}, skipping creation`);
+                return null;
             }
-        };
 
-        return unit;
+            const unit = {
+                id: this.getUnitId(unitName),
+                name: unitName,
+                afdeling: this.determineAfdeling(unitName),
+                status: this.determineStatus(validatedData.journeyStatus),
+                latitude: parseFloat(validatedData.lat),
+                longitude: parseFloat(validatedData.lng),
+                speed: parseFloat(validatedData.speed) || 0,
+                lastUpdate: validatedData.lastUpdate || new Date().toLocaleTimeString('id-ID'),
+                distance: parseFloat(validatedData.distance) || 0,
+                fuelLevel: this.computeFuelLevel(100, validatedData.distance, validatedData.journeyStatus),
+                fuelUsed: this.computeFuelUsage(validatedData.distance, validatedData.journeyStatus),
+                driver: validatedData.driver || 'Unknown',
+                accuracy: parseFloat(validatedData.accuracy) || 0,
+                batteryLevel: validatedData.batteryLevel || null,
+                lastLat: parseFloat(validatedData.lat),
+                lastLng: parseFloat(validatedData.lng),
+                isOnline: true,
+                sessionId: validatedData.sessionId,
+                lastFuelUpdate: Date.now(),
+                
+                // Analytics fields
+                analytics: {
+                    performanceScore: 75, // Default score
+                    efficiency: 0,
+                    violations: [],
+                    dailyDistance: 0,
+                    idleTime: 0,
+                    fuelEfficiency: 0,
+                    lastScoreUpdate: Date.now(),
+                    zoneEntries: [],
+                    maintenanceAlerts: []
+                }
+            };
+
+            console.log(`✅ Successfully created unit: ${unitName}`);
+            return unit;
+            
+        } catch (error) {
+            console.error(`❌ Failed to create unit ${unitName}:`, error);
+            this.logData(`Unit creation failed for ${unitName}`, 'error', {
+                error: error.message,
+                data: firebaseData
+            });
+            return null;
+        }
+    }
+
+    // ✅ FIX: Tambahkan method validasi dan sanitasi data
+    validateAndSanitizeUnitData(unitName, unitData) {
+        if (!unitData) return null;
+        
+        const sanitized = { ...unitData };
+        
+        // Pastikan koordinat ada dan valid
+        if (!sanitized.lat || !sanitized.lng) {
+            console.log(`❌ Missing coordinates for ${unitName}`);
+            return null;
+        }
+        
+        // Konversi ke number dan validasi
+        sanitized.lat = parseFloat(sanitized.lat);
+        sanitized.lng = parseFloat(sanitized.lng);
+        
+        if (isNaN(sanitized.lat) || isNaN(sanitized.lng)) {
+            console.log(`❌ Invalid coordinates for ${unitName}`);
+            return null;
+        }
+        
+        // Validasi range koordinat
+        if (sanitized.lat < -90 || sanitized.lat > 90 || 
+            sanitized.lng < -180 || sanitized.lng > 180) {
+            console.log(`❌ Coordinate out of range for ${unitName}`);
+            return null;
+        }
+        
+        // Default values untuk field yang required
+        sanitized.speed = sanitized.speed || 0;
+        sanitized.distance = sanitized.distance || 0;
+        sanitized.driver = sanitized.driver || 'Unknown';
+        sanitized.journeyStatus = sanitized.journeyStatus || 'active';
+        
+        return sanitized;
     }
 
     getUnitId(unitName) {
@@ -883,7 +1210,7 @@ class AdvancedSAGMGpsTracking {
                     ${routeInfo}
                 </div>
                 <div class="mt-2">
-                    <button class="btn btn-sm btn-primary w-100" onclick="window.gpsSystem.showUnitAnalytics('${unit.name}')">
+                    <button class="btn btn-sm btn-primary w-100" onclick="showUnitAnalytics('${unit.name}')">
                         📊 Lihat Analytics
                     </button>
                 </div>
@@ -903,12 +1230,79 @@ class AdvancedSAGMGpsTracking {
         
         const lat = parseFloat(unitData.lat);
         const lng = parseFloat(unitData.lng);
-        return !isNaN(lat) && !isNaN(lng);
+        
+        // ✅ FIX: Validasi koordinat yang tidak valid
+        if (isNaN(lat) || isNaN(lng)) return false;
+        if (lat === 0 && lng === 0) return false; // Koordinat null island
+        if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return false;
+        
+        return true;
     }
 
+    // ✅ FIX: Perbaiki method correctUnitData dengan logika koreksi yang benar
     correctUnitData(unitName, unitData) {
         console.log(`🛠️ Correcting invalid data for ${unitName}`);
         this.logData(`Data correction for ${unitName}`, 'warning', { unitData });
+        
+        // ✅ LOGIKA KOREKSI NYATA:
+        try {
+            const correctedData = { ...unitData };
+            
+            // Jika koordinat invalid, gunakan posisi terakhir yang valid
+            if (this.units.has(unitName)) {
+                const existingUnit = this.units.get(unitName);
+                correctedData.lat = existingUnit.latitude;
+                correctedData.lng = existingUnit.longitude;
+                console.log(`📍 Using last known position for ${unitName}`);
+            } else {
+                // Default position ke center map
+                correctedData.lat = this.config.center[0];
+                correctedData.lng = this.config.center[1];
+            }
+            
+            // Pastikan tipe data benar
+            correctedData.lat = parseFloat(correctedData.lat) || this.config.center[0];
+            correctedData.lng = parseFloat(correctedData.lng) || this.config.center[1];
+            correctedData.speed = parseFloat(correctedData.speed) || 0;
+            correctedData.distance = parseFloat(correctedData.distance) || 0;
+            
+            return correctedData;
+            
+        } catch (error) {
+            console.error(`❌ Failed to correct data for ${unitName}:`, error);
+            return null;
+        }
+    }
+
+    // ===== GPS MANAGEMENT METHODS =====
+    // ✅ FIX: Tambahkan method restartBackgroundGPS yang hilang
+    restartBackgroundGPS() {
+        console.log('🔄 Restarting background GPS due to poor accuracy...');
+        
+        try {
+            // Simulasi restart GPS - dalam implementasi nyata ini akan memanggil API GPS
+            this.logData('GPS system restart initiated', 'gps', {
+                reason: 'poor accuracy',
+                timestamp: new Date().toISOString()
+            });
+            
+            // Reset accuracy tracking untuk semua unit
+            this.units.forEach(unit => {
+                if (unit.accuracy > 50) { // Jika akurasi buruk (>50 meter)
+                    unit.accuracy = 0; // Reset untuk memaksa update baru
+                    console.log(`📍 Reset accuracy for ${unit.name}`);
+                }
+            });
+            
+            // Force refresh data
+            this.refreshData();
+            
+        } catch (error) {
+            console.error('❌ Failed to restart GPS:', error);
+            this.logData('GPS restart failed', 'error', {
+                error: error.message
+            });
+        }
     }
 
     // ===== FUEL CALCULATION METHODS =====
@@ -1660,33 +2054,38 @@ class AdvancedSAGMGpsTracking {
     setupMonitorChatSystem() {
         console.log('💬 Initializing enhanced monitor chat system with analytics...');
         
-        database.ref('/chat').on('child_added', (snapshot) => {
-            const unitName = snapshot.key;
-            console.log(`💬 New chat unit detected: ${unitName}`);
-            this.setupUnitChatListener(unitName);
-        });
+        try {
+            database.ref('/chat').on('child_added', (snapshot) => {
+                const unitName = snapshot.key;
+                console.log(`💬 New chat unit detected: ${unitName}`);
+                this.setupUnitChatListener(unitName);
+            });
 
-        database.ref('/chat').on('child_removed', (snapshot) => {
-            const unitName = snapshot.key;
-            this.cleanupUnitChatListener(unitName);
-        });
+            database.ref('/chat').on('child_removed', (snapshot) => {
+                const unitName = snapshot.key;
+                this.cleanupUnitChatListener(unitName);
+            });
 
-        database.ref('/units').on('value', (snapshot) => {
-            const unitsData = snapshot.val();
-            if (unitsData) {
-                Object.keys(unitsData).forEach(unitName => {
-                    if (!this.monitorChatRefs.has(unitName)) {
-                        this.setupUnitChatListener(unitName);
-                    }
-                });
-            }
-        });
+            database.ref('/units').on('value', (snapshot) => {
+                const unitsData = snapshot.val();
+                if (unitsData) {
+                    Object.keys(unitsData).forEach(unitName => {
+                        if (!this.monitorChatRefs.has(unitName)) {
+                            this.setupUnitChatListener(unitName);
+                        }
+                    });
+                }
+            });
 
-        this.setupChatEventHandlers();
-        this.monitorChatInitialized = true;
-        
-        console.log('💬 Enhanced monitor chat system with analytics activated');
-        this.logData('Sistem chat monitor dengan analytics diaktifkan', 'system');
+            this.setupChatEventHandlers();
+            this.monitorChatInitialized = true;
+            
+            console.log('💬 Enhanced monitor chat system with analytics activated');
+            this.logData('Sistem chat monitor dengan analytics diaktifkan', 'system');
+        } catch (chatError) {
+            console.error('Chat system initialization failed:', chatError);
+            this.logData('Sistem chat gagal diinisialisasi', 'warning');
+        }
     }
 
     setupUnitChatListener(unitName) {
@@ -1716,37 +2115,24 @@ class AdvancedSAGMGpsTracking {
         console.log(`💬 Now actively listening to chat for unit: ${unitName}`);
     }
 
-    handleMonitorChatMessage(unitName, message) {
-        if (!message || message.type === 'monitor') return;
-        
-        if (!this.monitorChatMessages.has(unitName)) {
-            this.monitorChatMessages.set(unitName, []);
+    cleanupUnitChatListener(unitName) {
+        if (this.monitorChatRefs.has(unitName)) {
+            const chatRef = this.monitorChatRefs.get(unitName);
+            chatRef.off();
+            
+            this.monitorChatRefs.delete(unitName);
+            this.monitorChatMessages.delete(unitName);
+            this.monitorUnreadCounts.delete(unitName);
+            
+            this.updateMonitorChatUnitSelect();
+            
+            if (this.activeChatUnit === unitName) {
+                this.activeChatUnit = null;
+                this.updateMonitorChatUI();
+            }
+            
+            console.log(`💬 Stopped listening to chat for unit: ${unitName}`);
         }
-        
-        const messages = this.monitorChatMessages.get(unitName);
-        
-        const messageExists = messages.some(msg => 
-            msg.id === message.id || 
-            (msg.timestamp === message.timestamp && msg.sender === message.sender)
-        );
-        
-        if (messageExists) return;
-        
-        messages.push(message);
-        
-        if (this.activeChatUnit !== unitName) {
-            const currentCount = this.monitorUnreadCounts.get(unitName) || 0;
-            this.monitorUnreadCounts.set(unitName, currentCount + 1);
-        }
-        
-        this.updateMonitorChatUI();
-        this.updateMonitorChatUnitSelect();
-        
-        if (this.activeChatUnit !== unitName) {
-            this.showMonitorChatNotification(unitName, message);
-        }
-        
-        console.log(`💬 New message from ${unitName}:`, message);
     }
 
     toggleMonitorChat() {
@@ -1837,51 +2223,6 @@ class AdvancedSAGMGpsTracking {
         
         if (this.escapeKeyHandler) {
             document.removeEventListener('keydown', this.escapeKeyHandler);
-        }
-    }
-
-    async sendMonitorMessage() {
-        const messageInput = document.getElementById('monitorChatInput');
-        const messageText = messageInput?.value.trim();
-        
-        if (!messageText || !this.activeChatUnit || !this.monitorChatRefs.has(this.activeChatUnit)) {
-            return;
-        }
-        
-        const messageId = 'msg_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
-        
-        const messageData = {
-            id: messageId,
-            text: messageText,
-            sender: 'MONITOR',
-            unit: this.activeChatUnit,
-            timestamp: new Date().toISOString(),
-            timeDisplay: new Date().toLocaleTimeString('id-ID', { 
-                hour: '2-digit', 
-                minute: '2-digit' 
-            }),
-            type: 'monitor',
-            status: 'sent'
-        };
-        
-        try {
-            const chatRef = this.monitorChatRefs.get(this.activeChatUnit);
-            await chatRef.push(messageData);
-            
-            if (!this.monitorChatMessages.has(this.activeChatUnit)) {
-                this.monitorChatMessages.set(this.activeChatUnit, []);
-            }
-            this.monitorChatMessages.get(this.activeChatUnit).push(messageData);
-            
-            this.updateMonitorChatUI();
-            this.logData(`💬 Pesan ke ${this.activeChatUnit}: "${messageText}"`, 'info');
-            
-            if (messageInput) messageInput.value = '';
-            this.stopMonitorTyping();
-            
-        } catch (error) {
-            console.error('Failed to send monitor message:', error);
-            this.logData('❌ Gagal mengirim pesan ke driver', 'error');
         }
     }
 
@@ -2034,28 +2375,6 @@ class AdvancedSAGMGpsTracking {
         return grouped;
     }
 
-    createMonitorMessageElement(message) {
-        const messageElement = document.createElement('div');
-        const isMonitorMessage = message.type === 'monitor';
-        
-        messageElement.className = `chat-message ${isMonitorMessage ? 'message-sent' : 'message-received'}`;
-        
-        messageElement.innerHTML = `
-            <div class="message-content">
-                ${!isMonitorMessage ? 
-                    `<div class="message-sender">${this.escapeHtml(message.sender)} (${message.unit})</div>` : ''}
-                <div class="message-text">${this.escapeHtml(message.text)}</div>
-                <div class="message-footer">
-                    <span class="message-time">${message.timeDisplay}</span>
-                    ${isMonitorMessage ? 
-                        `<span class="message-status">✓</span>` : ''}
-                </div>
-            </div>
-        `;
-        
-        return messageElement;
-    }
-
     setupChatEventHandlers() {
         const chatInput = document.getElementById('monitorChatInput');
         const unitSelect = document.getElementById('monitorChatUnitSelect');
@@ -2091,31 +2410,6 @@ class AdvancedSAGMGpsTracking {
                 this.selectChatUnit(e.target.value);
             });
         }
-    }
-
-    selectChatUnit(unitName) {
-        if (unitName === this.activeChatUnit) return;
-        
-        this.stopMonitorTyping();
-        this.activeChatUnit = unitName;
-        
-        if (unitName && this.monitorUnreadCounts.has(unitName)) {
-            this.monitorUnreadCounts.set(unitName, 0);
-        }
-        
-        this.updateMonitorChatUI();
-        this.updateMonitorChatUnitSelect();
-        
-        const chatInput = document.getElementById('monitorChatInput');
-        if (chatInput) {
-            setTimeout(() => {
-                chatInput.focus();
-                chatInput.select();
-            }, 150);
-        }
-        
-        console.log(`💬 Now chatting with unit: ${unitName}`);
-        this.logData(`Memulai chat dengan unit ${unitName}`, 'info');
     }
 
     updateMonitorChatUnitSelect() {
@@ -2185,26 +2479,6 @@ class AdvancedSAGMGpsTracking {
         }, 5000);
     }
 
-    cleanupUnitChatListener(unitName) {
-        if (this.monitorChatRefs.has(unitName)) {
-            const chatRef = this.monitorChatRefs.get(unitName);
-            chatRef.off();
-            
-            this.monitorChatRefs.delete(unitName);
-            this.monitorChatMessages.delete(unitName);
-            this.monitorUnreadCounts.delete(unitName);
-            
-            this.updateMonitorChatUnitSelect();
-            
-            if (this.activeChatUnit === unitName) {
-                this.activeChatUnit = null;
-                this.updateMonitorChatUI();
-            }
-            
-            console.log(`💬 Stopped listening to chat for unit: ${unitName}`);
-        }
-    }
-
     escapeHtml(text) {
         const div = document.createElement('div');
         div.textContent = text;
@@ -2266,129 +2540,61 @@ class AnalyticsEngine {
             totalViolations: 0,
             fuelEfficiency: 0
         };
+        
+        // ✅ FIX: Inisialisasi interval tracking
+        this.analyticsInterval = null;
     }
 
     initialize() {
         console.log('📊 Analytics Engine initialized');
         this.setupCharts();
-        this.startAnalyticsProcessing();
+        this.startAnalyticsProcessing(); // ✅ SEKARANG METHOD INI ADA
     }
 
-    setupCharts() {
-        this.setupPerformanceChart();
-        this.setupViolationsChart();
-        this.setupFuelChart();
-        this.setupMaintenanceChart();
-        this.setupZonesChart();
-    }
-
-    setupPerformanceChart() {
-        const ctx = document.getElementById('performanceChart')?.getContext('2d');
-        if (!ctx) return;
-
-        this.charts.set('performance', new Chart(ctx, {
-            type: 'line',
-            data: {
-                labels: Array.from({length: 10}, (_, i) => `${i * 5}m lalu`),
-                datasets: [{
-                    label: 'Skor Performa Rata-rata',
-                    data: Array(10).fill(75),
-                    borderColor: '#28a745',
-                    backgroundColor: 'rgba(40, 167, 69, 0.1)',
-                    tension: 0.4,
-                    fill: true
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: {
-                    legend: {
-                        display: false
-                    }
-                },
-                scales: {
-                    y: {
-                        beginAtZero: true,
-                        max: 100
-                    }
-                }
-            }
-        }));
-    }
-
-    setupViolationsChart() {
-        const ctx = document.getElementById('violationsChart')?.getContext('2d');
-        if (!ctx) return;
-
-        this.charts.set('violations', new Chart(ctx, {
-            type: 'doughnut',
-            data: {
-                labels: ['Kecepatan', 'Idle Time', 'Bahan Bakar', 'Zona'],
-                datasets: [{
-                    data: [0, 0, 0, 0],
-                    backgroundColor: ['#ff6b6b', '#ffd93d', '#6bcf7f', '#4d96ff']
-                }]
-            }
-        }));
-    }
-
-    setupFuelChart() {
-        const ctx = document.getElementById('fuelChart')?.getContext('2d');
-        if (!ctx) return;
-
-        this.charts.set('fuel', new Chart(ctx, {
-            type: 'bar',
-            data: {
-                labels: [],
-                datasets: [{
-                    label: 'Konsumsi Bahan Bakar (L)',
-                    data: [],
-                    backgroundColor: '#17a2b8'
-                }]
-            }
-        }));
-    }
-
-    setupMaintenanceChart() {
-        const ctx = document.getElementById('maintenanceChart')?.getContext('2d');
-        if (!ctx) return;
-
-        this.charts.set('maintenance', new Chart(ctx, {
-            type: 'bar',
-            data: {
-                labels: ['Oil Change', 'Tire Rotation', 'Brake Service', 'Major Service'],
-                datasets: [{
-                    label: 'KM Tersisa',
-                    data: [5000, 10000, 15000, 20000],
-                    backgroundColor: ['#28a745', '#20c997', '#ffc107', '#fd7e14']
-                }]
-            }
-        }));
-    }
-
-    setupZonesChart() {
-        const ctx = document.getElementById('zonesChart')?.getContext('2d');
-        if (!ctx) return;
-
-        this.charts.set('zones', new Chart(ctx, {
-            type: 'pie',
-            data: {
-                labels: ['PKS', 'Kantor', 'Afdeling I', 'Afdeling II', 'Afdeling III'],
-                datasets: [{
-                    data: [0, 0, 0, 0, 0],
-                    backgroundColor: ['#6f42c1', '#e83e8c', '#28a745', '#20c997', '#ffc107']
-                }]
-            }
-        }));
-    }
-
-    processUnitData(unit) {
-        const analytics = this.calculateUnitAnalytics(unit);
-        this.unitAnalytics.set(unit.name, analytics);
-        unit.analytics = { ...unit.analytics, ...analytics };
+    // ✅ FIX: Tambahkan method yang hilang
+    startAnalyticsProcessing() {
+        console.log('🔄 Starting analytics processing...');
         
-        this.updateUnitScore(unit);
+        // Hentikan interval sebelumnya jika ada
+        if (this.analyticsInterval) {
+            clearInterval(this.analyticsInterval);
+        }
+        
+        // Setup interval untuk update analytics secara berkala
+        this.analyticsInterval = setInterval(() => {
+            this.updateAllCharts();
+            this.updateDashboard();
+            this.processAllUnitsAnalytics();
+        }, 30000); // Update setiap 30 detik
+        
+        console.log('✅ Analytics processing started');
+    }
+
+    // ✅ FIX: Tambahkan method untuk proses semua unit
+    processAllUnitsAnalytics() {
+        this.main.units.forEach(unit => {
+            if (unit.isOnline) {
+                this.processUnitData(unit);
+            }
+        });
+    }
+
+    // ✅ FIX: Perbaiki method processUnitData
+    processUnitData(unit) {
+        try {
+            const analytics = this.calculateUnitAnalytics(unit);
+            this.unitAnalytics.set(unit.name, analytics);
+            unit.analytics = { ...unit.analytics, ...analytics };
+            
+            this.updateUnitScore(unit);
+            
+        } catch (error) {
+            console.error(`Error processing analytics for ${unit.name}:`, error);
+            this.main.logData(`Analytics error for ${unit.name}`, 'error', {
+                unit: unit.name,
+                error: error.message
+            });
+        }
     }
 
     calculateUnitAnalytics(unit) {
@@ -2507,12 +2713,164 @@ class AnalyticsEngine {
     }
 
     showUnitAnalytics(unitName) {
-        const unit = this.main.units.get(unitName);
-        if (!unit) return;
+        try {
+            const unit = this.main.units.get(unitName);
+            if (!unit) {
+                console.warn(`Unit ${unitName} tidak ditemukan`);
+                return;
+            }
 
-        const analytics = this.unitAnalytics.get(unitName) || {};
+            const analytics = this.unitAnalytics.get(unitName) || {};
+            
+            // ✅ FIX: Periksa apakah elemen modal ada sebelum mengaksesnya
+            const modalTitle = document.getElementById('analyticsModalTitle');
+            const modalBody = document.getElementById('analyticsModalBody');
+            
+            if (!modalTitle || !modalBody) {
+                console.error('Modal elements not found in DOM');
+                
+                // Fallback: tampilkan di console atau alert
+                console.log(`📊 Analytics untuk ${unitName}:`, {
+                    performanceScore: analytics.performanceScore || 0,
+                    efficiency: analytics.efficiency || 0,
+                    speedEfficiency: analytics.speedEfficiency || 0,
+                    fuelEfficiency: analytics.fuelEfficiency || 0
+                });
+                
+                // Atau buat modal secara dinamis
+                this.createDynamicAnalyticsModal(unitName, unit, analytics);
+                return;
+            }
+
+            const modalBodyContent = `
+                <div class="row">
+                    <div class="col-md-6">
+                        <h5>📊 Analytics Detail - ${unitName}</h5>
+                        <div class="card mb-3">
+                            <div class="card-body">
+                                <div class="row text-center">
+                                    <div class="col-6">
+                                        <div class="h2 text-${this.main.getScoreClass(analytics.performanceScore)}">
+                                            ${analytics.performanceScore || 0}
+                                        </div>
+                                        <small>Overall Score</small>
+                                    </div>
+                                    <div class="col-6">
+                                        <div class="h4 text-success">${analytics.efficiency || 0}%</div>
+                                        <small>Efficiency</small>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <h6>📈 Metrik Detail</h6>
+                        <div class="list-group">
+                            <div class="list-group-item d-flex justify-content-between">
+                                <span>Kecepatan:</span>
+                                <span>${unit.speed} km/h</span>
+                            </div>
+                            <div class="list-group-item d-flex justify-content-between">
+                                <span>Efisiensi Kecepatan:</span>
+                                <span>${analytics.speedEfficiency || 0}%</span>
+                            </div>
+                            <div class="list-group-item d-flex justify-content-between">
+                                <span>Jarak Tempuh:</span>
+                                <span>${unit.distance.toFixed(1)} km</span>
+                            </div>
+                            <div class="list-group-item d-flex justify-content-between">
+                                <span>Efisiensi Bahan Bakar:</span>
+                                <span>${analytics.fuelEfficiency || 0}%</span>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="col-md-6">
+                        <h6>⚠️ Pelanggaran</h6>
+                        <div id="unitViolationsList">
+                            ${this.renderUnitViolations(unit)}
+                        </div>
+                        
+                        <h6 class="mt-3">💡 Rekomendasi</h6>
+                        <div id="unitRecommendations">
+                            ${this.generateRecommendations(unit)}
+                        </div>
+
+                        <h6 class="mt-3">🔧 Maintenance</h6>
+                        <div id="unitMaintenance">
+                            ${this.renderUnitMaintenance(unit)}
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            modalTitle.textContent = `Analytics - ${unitName}`;
+            modalBody.innerHTML = modalBodyContent;
+            
+            // ✅ FIX: Gunakan Bootstrap modal dengan error handling
+            const modalElement = document.getElementById('analyticsModal');
+            if (modalElement) {
+                const modal = new bootstrap.Modal(modalElement);
+                modal.show();
+            } else {
+                console.error('Analytics modal element not found');
+                // Fallback: tampilkan dalam div sederhana
+                this.showFallbackAnalytics(unitName, unit, analytics);
+            }
+
+        } catch (error) {
+            console.error('Error showing unit analytics:', error);
+            this.main.logData(`Gagal menampilkan analytics untuk ${unitName}`, 'error', {
+                error: error.message,
+                stack: error.stack
+            });
+        }
+    }
+
+    // ✅ FIX: Tambahkan method fallback untuk menampilkan analytics
+    createDynamicAnalyticsModal(unitName, unit, analytics) {
+        // Cek jika modal sudah ada
+        let modalElement = document.getElementById('analyticsModal');
         
-        const modalBody = `
+        if (!modalElement) {
+            // Buat modal secara dinamis
+            const modalHTML = `
+                <div class="modal fade" id="analyticsModal" tabindex="-1" aria-labelledby="analyticsModalTitle" aria-hidden="true">
+                    <div class="modal-dialog modal-lg">
+                        <div class="modal-content">
+                            <div class="modal-header">
+                                <h5 class="modal-title" id="analyticsModalTitle">Analytics</h5>
+                                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                            </div>
+                            <div class="modal-body" id="analyticsModalBody">
+                                <!-- Content will be loaded here -->
+                            </div>
+                            <div class="modal-footer">
+                                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Tutup</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+            document.body.insertAdjacentHTML('beforeend', modalHTML);
+            modalElement = document.getElementById('analyticsModal');
+        }
+
+        // Sekarang tampilkan modal
+        const modalTitle = document.getElementById('analyticsModalTitle');
+        const modalBody = document.getElementById('analyticsModalBody');
+        
+        if (modalTitle && modalBody) {
+            modalTitle.textContent = `Analytics - ${unitName}`;
+            modalBody.innerHTML = this.createAnalyticsContent(unitName, unit, analytics);
+            
+            const modal = new bootstrap.Modal(modalElement);
+            modal.show();
+        }
+    }
+
+    // ✅ FIX: Method untuk membuat konten analytics
+    createAnalyticsContent(unitName, unit, analytics) {
+        return `
             <div class="row">
                 <div class="col-md-6">
                     <h5>📊 Analytics Detail - ${unitName}</h5>
@@ -2572,12 +2930,33 @@ class AnalyticsEngine {
                 </div>
             </div>
         `;
+    }
 
-        document.getElementById('analyticsModalTitle').textContent = `Analytics - ${unitName}`;
-        document.getElementById('analyticsModalBody').innerHTML = modalBody;
+    // ✅ FIX: Fallback sederhana jika modal tidak bisa ditampilkan
+    showFallbackAnalytics(unitName, unit, analytics) {
+        const fallbackHTML = `
+            <div class="alert alert-info position-fixed top-0 start-50 translate-middle-x mt-3" style="z-index: 9999; min-width: 300px;">
+                <div class="d-flex justify-content-between align-items-start">
+                    <div>
+                        <h6>📊 ${unitName} Analytics</h6>
+                        <div class="small">
+                            Score: ${analytics.performanceScore || 0}<br>
+                            Efficiency: ${analytics.efficiency || 0}%<br>
+                            Speed: ${unit.speed} km/h
+                        </div>
+                    </div>
+                    <button type="button" class="btn-close btn-sm" onclick="this.parentElement.parentElement.remove()"></button>
+                </div>
+            </div>
+        `;
         
-        const modal = new bootstrap.Modal(document.getElementById('analyticsModal'));
-        modal.show();
+        document.body.insertAdjacentHTML('beforeend', fallbackHTML);
+        
+        // Auto remove after 5 seconds
+        setTimeout(() => {
+            const alert = document.querySelector('.alert-info');
+            if (alert) alert.remove();
+        }, 5000);
     }
 
     renderUnitViolations(unit) {
@@ -2646,6 +3025,115 @@ class AnalyticsEngine {
                 <small>${rec}</small>
             </div>
         `).join('');
+    }
+
+    setupCharts() {
+        this.setupPerformanceChart();
+        this.setupViolationsChart();
+        this.setupFuelChart();
+        this.setupMaintenanceChart();
+        this.setupZonesChart();
+    }
+
+    setupPerformanceChart() {
+        const ctx = document.getElementById('performanceChart')?.getContext('2d');
+        if (!ctx) return;
+
+        this.charts.set('performance', new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: Array.from({length: 10}, (_, i) => `${i * 5}m lalu`),
+                datasets: [{
+                    label: 'Skor Performa Rata-rata',
+                    data: Array(10).fill(75),
+                    borderColor: '#28a745',
+                    backgroundColor: 'rgba(40, 167, 69, 0.1)',
+                    tension: 0.4,
+                    fill: true
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: {
+                        display: false
+                    }
+                },
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        max: 100
+                    }
+                }
+            }
+        }));
+    }
+
+    setupViolationsChart() {
+        const ctx = document.getElementById('violationsChart')?.getContext('2d');
+        if (!ctx) return;
+
+        this.charts.set('violations', new Chart(ctx, {
+            type: 'doughnut',
+            data: {
+                labels: ['Kecepatan', 'Idle Time', 'Bahan Bakar', 'Zona'],
+                datasets: [{
+                    data: [0, 0, 0, 0],
+                    backgroundColor: ['#ff6b6b', '#ffd93d', '#6bcf7f', '#4d96ff']
+                }]
+            }
+        }));
+    }
+
+    setupFuelChart() {
+        const ctx = document.getElementById('fuelChart')?.getContext('2d');
+        if (!ctx) return;
+
+        this.charts.set('fuel', new Chart(ctx, {
+            type: 'bar',
+            data: {
+                labels: [],
+                datasets: [{
+                    label: 'Konsumsi Bahan Bakar (L)',
+                    data: [],
+                    backgroundColor: '#17a2b8'
+                }]
+            }
+        }));
+    }
+
+    setupMaintenanceChart() {
+        const ctx = document.getElementById('maintenanceChart')?.getContext('2d');
+        if (!ctx) return;
+
+        this.charts.set('maintenance', new Chart(ctx, {
+            type: 'bar',
+            data: {
+                labels: ['Oil Change', 'Tire Rotation', 'Brake Service', 'Major Service'],
+                datasets: [{
+                    label: 'KM Tersisa',
+                    data: [5000, 10000, 15000, 20000],
+                    backgroundColor: ['#28a745', '#20c997', '#ffc107', '#fd7e14']
+                }]
+            }
+        }));
+    }
+
+    setupZonesChart() {
+        const ctx = document.getElementById('zonesChart')?.getContext('2d');
+        if (!ctx) return;
+
+        this.charts.set('zones', new Chart(ctx, {
+            type: 'pie',
+            data: {
+                labels: ['PKS', 'Kantor', 'Afdeling I', 'Afdeling II', 'Afdeling III'],
+                datasets: [{
+                    data: [0, 0, 0, 0, 0],
+                    backgroundColor: ['#6f42c1', '#e83e8c', '#28a745', '#20c997', '#ffc107']
+                }]
+            }
+        }));
     }
 
     updateAllCharts() {
@@ -2729,8 +3217,14 @@ class AnalyticsEngine {
         this.charts.clear();
     }
 
+    // ✅ FIX: Perbaiki method cleanup
     cleanup() {
+        if (this.analyticsInterval) {
+            clearInterval(this.analyticsInterval);
+            this.analyticsInterval = null;
+        }
         this.clearAll();
+        console.log('🧹 Analytics Engine cleaned up');
     }
 }
 
@@ -2742,12 +3236,26 @@ class GeofencingManager {
         this.zoneMarkers = new Map();
         this.zoneListeners = new Map();
         this.zoneViolations = new Map();
+        this.monitoringInterval = null; // ✅ FIX: Tambahkan properti
     }
 
     initialize() {
         console.log('📍 Geofencing Manager initialized');
         this.setupDefaultZones();
-        this.setupZoneMonitoring();
+        this.startZoneMonitoring(); // ✅ FIX: Ganti nama method
+    }
+
+    // ✅ FIX: Ganti nama method dan tambahkan properti
+    startZoneMonitoring() {
+        console.log('🔄 Starting zone monitoring...');
+        
+        if (this.monitoringInterval) {
+            clearInterval(this.monitoringInterval);
+        }
+        
+        this.monitoringInterval = setInterval(() => {
+            this.checkZoneTransitions();
+        }, 5000);
     }
 
     setupDefaultZones() {
@@ -2831,13 +3339,6 @@ class GeofencingManager {
                 </div>
             </div>
         `;
-    }
-
-    setupZoneMonitoring() {
-        // Monitor unit movements for zone entries/exits
-        setInterval(() => {
-            this.checkZoneTransitions();
-        }, 5000);
     }
 
     checkUnitZones(unit) {
@@ -2995,7 +3496,12 @@ class GeofencingManager {
     }
 
     cleanup() {
+        if (this.monitoringInterval) {
+            clearInterval(this.monitoringInterval);
+            this.monitoringInterval = null;
+        }
         this.clearAll();
+        console.log('🧹 Geofencing Manager cleaned up');
     }
 }
 
@@ -3004,6 +3510,7 @@ class ViolationDetector {
     constructor(mainSystem) {
         this.main = mainSystem;
         this.violations = new Map();
+        this.monitoringInterval = null; // ✅ FIX: Tambahkan properti
         this.violationTypes = {
             SPEEDING: {
                 threshold: 80,
@@ -3030,6 +3537,21 @@ class ViolationDetector {
     initialize() {
         console.log('⚠️ Violation Detector initialized');
         this.startViolationMonitoring();
+    }
+
+    // ✅ FIX: Tambahkan properti interval
+    startViolationMonitoring() {
+        console.log('🔄 Starting violation monitoring...');
+        
+        if (this.monitoringInterval) {
+            clearInterval(this.monitoringInterval);
+        }
+        
+        this.monitoringInterval = setInterval(() => {
+            this.main.units.forEach(unit => {
+                this.checkViolations(unit);
+            });
+        }, 30000);
     }
 
     checkViolations(unit) {
@@ -3147,14 +3669,6 @@ class ViolationDetector {
         `).join('');
     }
 
-    startViolationMonitoring() {
-        setInterval(() => {
-            this.main.units.forEach(unit => {
-                this.checkViolations(unit);
-            });
-        }, 30000); // Check every 30 seconds
-    }
-
     cleanupUnit(unitName) {
         this.violations.delete(unitName);
     }
@@ -3164,7 +3678,12 @@ class ViolationDetector {
     }
 
     cleanup() {
+        if (this.monitoringInterval) {
+            clearInterval(this.monitoringInterval);
+            this.monitoringInterval = null;
+        }
         this.clearAll();
+        console.log('🧹 Violation Detector cleaned up');
     }
 }
 
@@ -3174,11 +3693,27 @@ class FuelMonitor {
         this.main = mainSystem;
         this.fuelData = new Map();
         this.anomalies = new Map();
+        this.monitoringInterval = null; // ✅ FIX: Tambahkan properti
     }
 
     initialize() {
         console.log('⛽ Fuel Monitor initialized');
         this.startFuelMonitoring();
+    }
+
+    // ✅ FIX: Tambahkan properti interval
+    startFuelMonitoring() {
+        console.log('🔄 Starting fuel monitoring...');
+        
+        if (this.monitoringInterval) {
+            clearInterval(this.monitoringInterval);
+        }
+        
+        this.monitoringInterval = setInterval(() => {
+            this.main.units.forEach(unit => {
+                this.monitorFuelUsage(unit);
+            });
+        }, 60000);
     }
 
     monitorFuelUsage(unit) {
@@ -3263,14 +3798,6 @@ class FuelMonitor {
         }
     }
 
-    startFuelMonitoring() {
-        setInterval(() => {
-            this.main.units.forEach(unit => {
-                this.monitorFuelUsage(unit);
-            });
-        }, 60000); // Check every minute
-    }
-
     cleanupUnit(unitName) {
         this.fuelData.delete(unitName);
         this.anomalies.delete(unitName);
@@ -3282,7 +3809,12 @@ class FuelMonitor {
     }
 
     cleanup() {
+        if (this.monitoringInterval) {
+            clearInterval(this.monitoringInterval);
+            this.monitoringInterval = null;
+        }
         this.clearAll();
+        console.log('🧹 Fuel Monitor cleaned up');
     }
 }
 
@@ -3292,11 +3824,25 @@ class PerformanceManager {
         this.main = mainSystem;
         this.rankings = new Map();
         this.dailyScores = new Map();
+        this.rankingInterval = null; // ✅ FIX: Tambahkan properti
     }
 
     initialize() {
         console.log('🏆 Performance Manager initialized');
         this.startRankingUpdates();
+    }
+
+    // ✅ FIX: Tambahkan properti interval
+    startRankingUpdates() {
+        console.log('🔄 Starting ranking updates...');
+        
+        if (this.rankingInterval) {
+            clearInterval(this.rankingInterval);
+        }
+        
+        this.rankingInterval = setInterval(() => {
+            this.updateRankings();
+        }, 30000);
     }
 
     updateRankings() {
@@ -3360,12 +3906,6 @@ class PerformanceManager {
         }
     }
 
-    startRankingUpdates() {
-        setInterval(() => {
-            this.updateRankings();
-        }, 30000); // Update every 30 seconds
-    }
-
     cleanupUnit(unitName) {
         this.rankings.delete(unitName);
         this.dailyScores.delete(unitName);
@@ -3377,7 +3917,12 @@ class PerformanceManager {
     }
 
     cleanup() {
+        if (this.rankingInterval) {
+            clearInterval(this.rankingInterval);
+            this.rankingInterval = null;
+        }
         this.clearAll();
+        console.log('🧹 Performance Manager cleaned up');
     }
 }
 
@@ -3395,7 +3940,9 @@ class HeatmapManager {
         this.setupHeatmapControls();
     }
 
+    // ✅ FIX: Tambahkan method yang hilang
     setupHeatmapControls() {
+        console.log('🎛️ Setting up heatmap controls...');
         const toggle = document.getElementById('heatmapToggle');
         if (toggle) {
             toggle.addEventListener('change', (e) => {
@@ -3517,6 +4064,15 @@ class MaintenancePredictor {
         this.setupMaintenanceSchedule();
     }
 
+    // ✅ FIX: Tambahkan method yang hilang
+    setupMaintenanceSchedule() {
+        console.log('📅 Setting up maintenance schedule...');
+        // Initialize maintenance schedule for existing units
+        this.main.units.forEach(unit => {
+            this.initializeUnit(unit);
+        });
+    }
+
     initializeUnit(unit) {
         this.maintenanceSchedule.set(unit.name, {
             oilChange: this.calculateNextMaintenance(unit.distance, this.main.vehicleConfig.maintenanceIntervals.oilChange),
@@ -3543,6 +4099,7 @@ class MaintenancePredictor {
         return this.maintenanceSchedule.get(unitName);
     }
 
+    // ✅ FIX: Tambahkan method yang hilang
     updateMaintenancePredictions() {
         this.main.units.forEach(unit => {
             const schedule = this.maintenanceSchedule.get(unit.name);
@@ -3556,8 +4113,15 @@ class MaintenancePredictor {
         });
     }
 
+    // ✅ FIX: Tambahkan method yang hilang
     getServiceInterval(service) {
-        return this.main.vehicleConfig.maintenanceIntervals[service] || 10000;
+        const intervals = {
+            'oilChange': this.main.vehicleConfig.maintenanceIntervals.oilChange,
+            'tireRotation': this.main.vehicleConfig.maintenanceIntervals.tireRotation,
+            'brakeService': this.main.vehicleConfig.maintenanceIntervals.brakeService,
+            'majorService': this.main.vehicleConfig.maintenanceIntervals.majorService
+        };
+        return intervals[service] || 10000;
     }
 
     updateMaintenanceDisplay() {
@@ -3618,6 +4182,20 @@ class NotificationSystem {
 
     initialize() {
         console.log('🔔 Notification System initialized');
+        this.setupNotificationPanel();
+    }
+
+    // ✅ FIX: Tambahkan method yang hilang
+    setupNotificationPanel() {
+        console.log('📋 Setting up notification panel...');
+        // Pastikan panel notifikasi ada di DOM
+        if (!document.getElementById('notificationPanel')) {
+            const panel = document.createElement('div');
+            panel.id = 'notificationPanel';
+            panel.className = 'position-fixed top-0 end-0 p-3';
+            panel.style.cssText = 'z-index: 9998; max-width: 400px;';
+            document.body.appendChild(panel);
+        }
     }
 
     showZoneNotification(unit, zone, type) {
@@ -3782,6 +4360,34 @@ window.addEventListener('beforeunload', function() {
     }
 });
 
+// ✅ ENHANCED GLOBAL FUNCTIONS - IMPROVED ERROR HANDLING
+function showUnitAnalytics(unitName) {
+    try {
+        if (window.gpsSystem && window.gpsSystem.analyticsEngine) {
+            window.gpsSystem.analyticsEngine.showUnitAnalytics(unitName);
+        } else {
+            console.warn('GPS System atau Analytics Engine belum siap');
+            // Fallback sederhana
+            alert(`Analytics untuk ${unitName}\nSistem sedang memuat...`);
+        }
+    } catch (error) {
+        console.error('Error in showUnitAnalytics:', error);
+        alert('Terjadi error saat menampilkan analytics. Silakan coba lagi.');
+    }
+}
+
+function showZoneManager() {
+    try {
+        if (window.gpsSystem && window.gpsSystem.geofencingManager) {
+            window.gpsSystem.geofencingManager.showZoneManager();
+        } else {
+            console.warn('GPS System atau Geofencing Manager belum siap');
+        }
+    } catch (error) {
+        console.error('Error in showZoneManager:', error);
+    }
+}
+
 // Global functions for HTML onclick handlers
 function refreshData() {
     if (window.gpsSystem) {
@@ -3821,18 +4427,6 @@ function toggleHeatmap() {
 function toggleGeofencing() {
     if (window.gpsSystem && window.gpsSystem.geofencingManager) {
         window.gpsSystem.geofencingManager.toggleZones();
-    }
-}
-
-function showZoneManager() {
-    if (window.gpsSystem && window.gpsSystem.geofencingManager) {
-        window.gpsSystem.geofencingManager.showZoneManager();
-    }
-}
-
-function showUnitAnalytics(unitName) {
-    if (window.gpsSystem && window.gpsSystem.analyticsEngine) {
-        window.gpsSystem.analyticsEngine.showUnitAnalytics(unitName);
     }
 }
 
