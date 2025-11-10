@@ -234,9 +234,15 @@ class HaversineDistanceSpeedCalculator {
 class RealTimeGPSProcessor {
     constructor() {
         this.distanceCalculator = new HaversineDistanceSpeedCalculator();
-        this.updateInterval = 1000; // 1 detik
+        this.updateInterval = 1000; // 1 detik (tidak dipakai untuk throttle)
         this.isProcessing = false;
-        this.processingDelay = 3; // 3ms delay
+        this.processingDelay = 0; // default tanpa delay
+        this.tuning = {
+            idleSnapKmh: 3,
+            minMoveMeters: 8,
+            antiZigzagAccuracy: 25
+        };
+        this.strictRealtime = false;
         
         // Real-time data
         this.currentData = {
@@ -248,6 +254,26 @@ class RealTimeGPSProcessor {
         };
 
         this.callbacks = [];
+    }
+
+    /**
+     * Set tuning parameters for idle snap and anti-jitter
+     */
+    setTuning(tuning) {
+        this.tuning = { ...this.tuning, ...(tuning || {}) };
+    }
+
+    /**
+     * Aktifkan mode strict realtime (tanpa filter/jeda)
+     */
+    setStrictRealtime(enabled = true) {
+        this.strictRealtime = !!enabled;
+        if (this.strictRealtime) {
+            this.processingDelay = 0;
+            this.tuning.idleSnapKmh = 0;
+            this.tuning.minMoveMeters = 0;
+            // antiZigzagAccuracy tidak relevan jika minMoveMeters=0
+        }
     }
 
     /**
@@ -268,7 +294,31 @@ class RealTimeGPSProcessor {
             }
 
             // Hitung jarak dan kecepatan menggunakan Haversine
+            const prevTotal = this.distanceCalculator.totalDistance || 0;
             const result = this.distanceCalculator.updateWithGPSPosition(gpsPosition);
+            let adjustedDistance = result.distance;
+            let adjustedSpeed = result.speed;
+
+            if (!this.strictRealtime) {
+                // Idle snap: perlakukan kecepatan sangat kecil sebagai diam
+                if (adjustedSpeed < (this.tuning.idleSnapKmh || 0)) {
+                    adjustedDistance = 0;
+                    adjustedSpeed = 0;
+                }
+
+                // Anti-zigzag ringan: jika akurasi buruk dan pergeseran kecil, abaikan
+                const accuracy = (gpsPosition.coords && typeof gpsPosition.coords.accuracy === 'number')
+                    ? gpsPosition.coords.accuracy
+                    : 0;
+                const minMove = (this.tuning.minMoveMeters || 0);
+                if (accuracy > (this.tuning.antiZigzagAccuracy || 0) && (adjustedDistance * 1000) < minMove) {
+                    adjustedDistance = 0;
+                }
+            }
+
+            // Recompute total distance with adjustments
+            const newTotal = prevTotal + adjustedDistance;
+            this.distanceCalculator.totalDistance = newTotal;
             
             // Update current data
             this.currentData = {
@@ -276,9 +326,9 @@ class RealTimeGPSProcessor {
                     lat: gpsPosition.coords.latitude,
                     lng: gpsPosition.coords.longitude
                 },
-                distance: result.distance,
-                speed: result.speed,
-                totalDistance: result.totalDistance,
+                distance: adjustedDistance,
+                speed: adjustedSpeed,
+                totalDistance: newTotal,
                 timestamp: result.timestamp
             };
 
@@ -5507,6 +5557,12 @@ class EnhancedDTGPSLogger {
         this.lastProcessedCoordinate = null;
         this.lastProcessedCoordinateTime = 0;
         this.lastDistancePersistTime = 0;
+        this.accuracyTuning = {
+            idleSnapKmh: 3,
+            minMoveMeters: 8,
+            antiZigzagAccuracy: 25
+        };
+        this.strictRealtime = true;
 
         // Storage & Buffers with enhanced capabilities
         this.waypointBuffer = new CircularBuffer(this.waypointConfig.maxWaypoints);
@@ -5588,6 +5644,10 @@ class EnhancedDTGPSLogger {
             
             // === TAMBAHKAN INI ===
             this.setupRealTimeCallbacks();
+            this.realTimeProcessor.setTuning(this.accuracyTuning);
+            if (this.strictRealtime) {
+                this.realTimeProcessor.setStrictRealtime(true);
+            }
             // =====================
             
             // Setup resume callbacks
