@@ -74,6 +74,17 @@ class AdvancedSAGMGpsTracking {
         this.monitorChatInitialized = false;
         this.isMonitorTyping = false;
         this.monitorTypingTimeout = null;
+
+        // ✅ CHAT SYSTEM PROPERTIES - TAMBAHKAN DI CONSTRUCTOR
+        this.isChatOpen = false;
+        this.chatInitialized = false;
+        this.unreadCount = 0;
+        this.chatMessages = [];
+        this.chatRef = null;
+        this.driverData = {
+            name: 'MONITOR',
+            unit: 'CONTROL_ROOM'
+
         
         // Route visualization
         this.showRoutes = true;
@@ -152,6 +163,7 @@ class AdvancedSAGMGpsTracking {
             console.log('🚀 Starting Advanced GPS Tracking System with Complete Analytics...');
             this.setupMap();
             this.setupEventHandlers();
+            this.setupChatHandlers();
             this.connectToFirebase();
             this.startPeriodicTasks();
             this.setupDataLogger();
@@ -203,6 +215,7 @@ class AdvancedSAGMGpsTracking {
             });
         }
     }
+    
 
     // ===== ENHANCED CHAT SYSTEM METHODS =====
     
@@ -325,6 +338,134 @@ class AdvancedSAGMGpsTracking {
         
         return messageElement;
     }
+        // === IMPLEMENTASI METHOD CHAT ===
+toggleChat() {
+    this.isChatOpen = !this.isChatOpen;
+    const chatPanel = document.getElementById('chatPanel');
+    
+    if (chatPanel) {
+        if (this.isChatOpen) {
+            chatPanel.classList.remove('hidden');
+            this.initializeChat();
+            this.loadChatMessages();
+        } else {
+            chatPanel.classList.add('hidden');
+        }
+    }
+}
+
+initializeChat() {
+    if (this.chatInitialized || !this.chatRef) return;
+
+    this.chatRef.on('child_added', (snapshot) => {
+        const message = snapshot.val();
+        this.displayChatMessage(message);
+    });
+
+    this.chatInitialized = true;
+    console.log('💬 Chat system initialized');
+}
+
+displayChatMessage(message) {
+    const chatMessages = document.getElementById('chatMessages');
+    if (!chatMessages) return;
+
+    const messageElement = document.createElement('div');
+    messageElement.className = `chat-message ${message.sender === 'system' ? 'system-message' : 'user-message'}`;
+    messageElement.innerHTML = `
+        <div class="message-sender">${message.sender}</div>
+        <div class="message-text">${message.text}</div>
+        <div class="message-time">${new Date(message.timestamp).toLocaleTimeString('id-ID')}</div>
+    `;
+
+    chatMessages.appendChild(messageElement);
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+
+    // Update unread count if chat is closed
+    if (!this.isChatOpen && message.sender !== 'system') {
+        this.unreadCount++;
+        this.updateChatBadge();
+    }
+}
+
+updateChatBadge() {
+    const chatBadge = document.getElementById('chatBadge');
+    if (chatBadge) {
+        chatBadge.textContent = this.unreadCount > 0 ? this.unreadCount.toString() : '';
+        chatBadge.style.display = this.unreadCount > 0 ? 'block' : 'none';
+    }
+}
+
+async sendChatMessage() {
+    const chatInput = document.getElementById('chatInput');
+    if (!chatInput || !chatInput.value.trim() || !this.chatRef) return;
+
+    const messageText = chatInput.value.trim();
+    const message = {
+        text: messageText,
+        sender: this.driverData?.name || 'Unknown',
+        timestamp: new Date().toISOString(),
+        unit: this.driverData?.unit,
+        synced: true
+    };
+
+    try {
+        await this.chatRef.push().set(message);
+        chatInput.value = '';
+        
+        // Also add to local messages for immediate display
+        this.displayChatMessage(message);
+        this.chatMessages.push(message);
+        
+    } catch (error) {
+        console.error('❌ Failed to send chat message:', error);
+        this.addLog('Gagal mengirim pesan chat', 'error');
+    }
+}
+
+loadChatMessages() {
+    // Clear unread count when opening chat
+    this.unreadCount = 0;
+    this.updateChatBadge();
+}
+
+// === SETUP CHAT EVENT HANDLERS ===
+setupChatHandlers() {
+    // Chat toggle button
+    const chatToggle = document.getElementById('chatToggle');
+    if (chatToggle) {
+        chatToggle.addEventListener('click', () => this.toggleChat());
+    }
+
+    // Send message button
+    const sendButton = document.getElementById('sendChatButton');
+    if (sendButton) {
+        sendButton.addEventListener('click', () => this.sendChatMessage());
+    }
+
+    // Enter key in chat input
+    const chatInput = document.getElementById('chatInput');
+    if (chatInput) {
+        chatInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                this.sendChatMessage();
+            }
+        });
+    }
+}
+
+// === INITIALIZE CHAT FOR UNIT ===
+initializeUnitChat(unitName) {
+    if (!this.chatRef) {
+        this.chatRef = database.ref(`/chat/${unitName}`);
+        console.log(`💬 Chat initialized for unit: ${unitName}`);
+    }
+}
+
+// === UPDATE DRIVER DATA ===
+updateDriverData(driverData) {
+    this.driverData = driverData;
+}
 
     // ✅ METHOD BARU: Baca semua pesan history dari Firebase
     async loadChatHistory(unitName) {
@@ -619,6 +760,10 @@ class AdvancedSAGMGpsTracking {
                 isOnline: true,
                 sessionId: validatedData.sessionId,
                 lastFuelUpdate: Date.now(),
+                // Chat fields - TAMBAHKAN DI SINI
+                chatEnabled: true,
+                lastChatActivity: null
+                
                 
                 // Analytics fields
                 analytics: {
@@ -633,7 +778,7 @@ class AdvancedSAGMGpsTracking {
                     maintenanceAlerts: []
                 }
             };
-
+             this.initializeUnitChat(unitName);
             console.log(`✅ Successfully created unit: ${unitName}`);
             return unit;
             
@@ -1669,6 +1814,11 @@ class AdvancedSAGMGpsTracking {
         this.lastDataTimestamps.clear();
         this.inactiveUnitTracker.clear();
         this.routeColors.clear();
+        // Clear chat data
+        this.chatMessages = [];
+        this.unreadCount = 0;
+        this.isChatOpen = false;
+        this.chatInitialized = false;
         
         this.monitorChatRefs.forEach((ref, unitName) => {
             ref.off();
@@ -3219,6 +3369,19 @@ class AnalyticsEngine {
 
     // ✅ FIX: Perbaiki method cleanup
     cleanup() {
+    console.log('🧹 Comprehensive system cleanup with analytics support...');
+    
+    // Cleanup chat system
+    if (this.chatRef) {
+        this.chatRef.off();
+        this.chatRef = null;
+    }
+    
+    this.chatMessages = [];
+    this.unreadCount = 0;
+    this.isChatOpen = false;
+    this.chatInitialized = false;
+    cleanup() {
         if (this.analyticsInterval) {
             clearInterval(this.analyticsInterval);
             this.analyticsInterval = null;
@@ -4452,5 +4615,17 @@ function sendMonitorMessage() {
 function selectChatUnit(unitName) {
     if (window.gpsSystem) {
         window.gpsSystem.selectChatUnit(unitName);
+    }
+}
+// Global chat functions
+function toggleChat() {
+    if (window.gpsSystem) {
+        window.gpsSystem.toggleChat();
+    }
+}
+
+function sendChatMessage() {
+    if (window.gpsSystem) {
+        window.gpsSystem.sendChatMessage();
     }
 }
