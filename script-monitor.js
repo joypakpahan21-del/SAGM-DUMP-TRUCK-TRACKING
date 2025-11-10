@@ -84,7 +84,7 @@ class AdvancedSAGMGpsTracking {
         this.driverData = {
             name: 'MONITOR',
             unit: 'CONTROL_ROOM'
-
+        }
         
         // Route visualization
         this.showRoutes = true;
@@ -762,15 +762,15 @@ updateDriverData(driverData) {
                 lastFuelUpdate: Date.now(),
                 // Chat fields - TAMBAHKAN DI SINI
                 chatEnabled: true,
-                lastChatActivity: null
+				lastChatActivity: null,
                 
-                
+
                 // Analytics fields
                 analytics: {
                     performanceScore: 75, // Default score
                     efficiency: 0,
                     violations: [],
-                    dailyDistance: 0,
+					dailyDistance: 0,
                     idleTime: 0,
                     fuelEfficiency: 0,
                     lastScoreUpdate: Date.now(),
@@ -2290,74 +2290,82 @@ updateDriverData(driverData) {
         const chatWindow = document.getElementById('monitorChatWindow');
         const chatToggle = document.getElementById('monitorChatToggle');
         
-        if (chatWindow) {
-            if (this.isMonitorChatOpen) {
-                chatWindow.style.display = 'flex';
-                void chatWindow.offsetWidth;
-                chatWindow.style.animation = 'slideInUp 0.3s ease-out forwards';
-                
-                this.updateMonitorChatUnitSelect();
-                this.updateMonitorChatUI();
-                
-                if (this.activeChatUnit) {
-                    setTimeout(() => {
-                        const chatInput = document.getElementById('monitorChatInput');
-                        if (chatInput) {
-                            chatInput.focus();
-                            chatInput.select();
-                        }
-                    }, 350);
-                }
-                
-                if (chatToggle) {
-                    chatToggle.innerHTML = '💬 Tutup Chat <span id="monitorUnreadBadge" class="badge bg-danger" style="display: none;"></span>';
-                    chatToggle.classList.add('btn-secondary');
-                    chatToggle.classList.remove('btn-primary');
-                }
-                
-            } else {
-                chatWindow.style.animation = 'slideOutDown 0.25s ease-in forwards';
-                this.stopMonitorTyping();
-                
-                if (chatToggle) {
-                    chatToggle.innerHTML = '💬 Chat dengan Driver <span id="monitorUnreadBadge" class="badge bg-danger" style="display: none;"></span>';
-                    chatToggle.classList.add('btn-primary');
-                    chatToggle.classList.remove('btn-secondary');
-                }
-                
+        if (!chatWindow) {
+            return;
+        }
+
+        if (this.isMonitorChatOpen) {
+            this.cleanupChatEventListeners();
+            this.setupChatEventListeners();
+
+            chatWindow.style.display = 'flex';
+            void chatWindow.offsetWidth;
+            chatWindow.style.animation = 'slideInUp 0.3s ease-out forwards';
+            
+            this.updateMonitorChatUnitSelect();
+            this.updateMonitorChatUI();
+            
+            if (this.activeChatUnit) {
                 setTimeout(() => {
-                    if (!this.isMonitorChatOpen) {
-                        chatWindow.style.display = 'none';
-                        chatWindow.style.animation = '';
+                    const chatInput = document.getElementById('monitorChatInput');
+                    if (chatInput) {
+                        chatInput.focus();
+                        chatInput.select();
                     }
-                }, 250);
+                }, 350);
             }
+            
+            if (chatToggle) {
+                chatToggle.innerHTML = '💬 Tutup Chat <span id="monitorUnreadBadge" class="badge bg-danger" style="display: none;"></span>';
+                chatToggle.classList.add('btn-secondary');
+                chatToggle.classList.remove('btn-primary');
+            }
+            
+        } else {
+            chatWindow.style.animation = 'slideOutDown 0.25s ease-in forwards';
+            this.stopMonitorTyping();
+            
+            if (chatToggle) {
+                chatToggle.innerHTML = '💬 Chat dengan Driver <span id="monitorUnreadBadge" class="badge bg-danger" style="display: none;"></span>';
+                chatToggle.classList.add('btn-primary');
+                chatToggle.classList.remove('btn-secondary');
+            }
+            
+            setTimeout(() => {
+                if (!this.isMonitorChatOpen) {
+                    chatWindow.style.display = 'none';
+                    chatWindow.style.animation = '';
+                }
+            }, 250);
+
+            this.cleanupChatEventListeners();
         }
     }
 
-    setupChatWindowBehavior() {
+    // Set up chat event listeners for click-outside-to-close and Escape key close functionality
+    setupChatEventListeners() {
         const chatWindow = document.getElementById('monitorChatWindow');
         const chatToggle = document.getElementById('monitorChatToggle');
         
-        if (chatWindow && chatToggle) {
-            this.chatWindowClickHandler = (e) => e.stopPropagation();
-            this.documentClickHandler = (e) => {
-                if (this.isMonitorChatOpen && 
-                    !chatWindow.contains(e.target) && 
-                    !chatToggle.contains(e.target)) {
-                    this.toggleMonitorChat();
-                }
-            };
-            this.escapeKeyHandler = (e) => {
-                if (e.key === 'Escape' && this.isMonitorChatOpen) {
-                    this.toggleMonitorChat();
-                }
-            };
-            
-            chatWindow.addEventListener('click', this.chatWindowClickHandler);
-            document.addEventListener('click', this.documentClickHandler);
-            document.addEventListener('keydown', this.escapeKeyHandler);
-        }
+        if (!chatWindow || !chatToggle) return;
+
+        this.chatWindowClickHandler = (e) => e.stopPropagation();
+        this.documentClickHandler = (e) => {
+            if (this.isMonitorChatOpen &&
+                !chatWindow.contains(e.target) &&
+                !chatToggle.contains(e.target)) {
+                this.toggleMonitorChat();
+            }
+        };
+        this.escapeKeyHandler = (e) => {
+            if (e.key === 'Escape' && this.isMonitorChatOpen) {
+                this.toggleMonitorChat();
+            }
+        };
+        
+        chatWindow.addEventListener('click', this.chatWindowClickHandler);
+        document.addEventListener('click', this.documentClickHandler);
+        document.addEventListener('keydown', this.escapeKeyHandler);
     }
 
     cleanupChatEventListeners() {
@@ -2374,6 +2382,10 @@ updateDriverData(driverData) {
         if (this.escapeKeyHandler) {
             document.removeEventListener('keydown', this.escapeKeyHandler);
         }
+
+        this.chatWindowClickHandler = null;
+        this.documentClickHandler = null;
+        this.escapeKeyHandler = null;
     }
 
     startMonitorTyping() {
@@ -3368,19 +3380,6 @@ class AnalyticsEngine {
     }
 
     // ✅ FIX: Perbaiki method cleanup
-    cleanup() {
-    console.log('🧹 Comprehensive system cleanup with analytics support...');
-    
-    // Cleanup chat system
-    if (this.chatRef) {
-        this.chatRef.off();
-        this.chatRef = null;
-    }
-    
-    this.chatMessages = [];
-    this.unreadCount = 0;
-    this.isChatOpen = false;
-    this.chatInitialized = false;
     cleanup() {
         if (this.analyticsInterval) {
             clearInterval(this.analyticsInterval);
