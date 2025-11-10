@@ -178,6 +178,46 @@ class HaversineDistanceSpeedCalculator {
     }
 
     /**
+     * Get persistent state snapshot untuk disimpan
+     */
+    getState() {
+        return {
+            totalDistance: this.totalDistance,
+            lastPosition: this.lastPosition
+                ? {
+                    lat: this.lastPosition.lat,
+                    lng: this.lastPosition.lng,
+                    timestamp: this.lastPosition.timestamp ? this.lastPosition.timestamp.toISOString() : null
+                }
+                : null,
+            lastCalculationTime: this.lastCalculationTime ? this.lastCalculationTime.toISOString() : null
+        };
+    }
+
+    /**
+     * Restore persistent state dari penyimpanan
+     */
+    restoreState(state) {
+        if (!state || typeof state !== 'object') return;
+
+        if (typeof state.totalDistance === 'number' && isFinite(state.totalDistance)) {
+            this.totalDistance = state.totalDistance;
+        }
+
+        if (state.lastPosition && state.lastPosition.lat !== undefined && state.lastPosition.lng !== undefined) {
+            this.lastPosition = {
+                lat: state.lastPosition.lat,
+                lng: state.lastPosition.lng,
+                timestamp: state.lastPosition.timestamp ? new Date(state.lastPosition.timestamp) : new Date()
+            };
+        }
+
+        if (state.lastCalculationTime) {
+            this.lastCalculationTime = new Date(state.lastCalculationTime);
+        }
+    }
+
+    /**
      * Reset calculator
      */
     reset() {
@@ -297,6 +337,29 @@ class RealTimeGPSProcessor {
     }
 
     /**
+     * Get persistent state
+     */
+    getState() {
+        return this.distanceCalculator.getState();
+    }
+
+    /**
+     * Restore persistent state
+     */
+    restoreState(state) {
+        this.distanceCalculator.restoreState(state);
+        if (state && state.lastPosition) {
+            this.currentData.position = {
+                lat: state.lastPosition.lat,
+                lng: state.lastPosition.lng
+            };
+        }
+        if (state && typeof state.totalDistance === 'number') {
+            this.currentData.totalDistance = state.totalDistance;
+        }
+    }
+
+    /**
      * Reset processor
      */
     reset() {
@@ -309,6 +372,91 @@ class RealTimeGPSProcessor {
             timestamp: null
         };
         console.log('🔄 Real-time GPS Processor reset');
+    }
+}
+
+// ===== BACKGROUND GPS POLLER =====
+class BackgroundGPSPoller {
+    constructor(logger, options = {}) {
+        this.logger = logger;
+        this.pollInterval = null;
+        this.isActive = false;
+        this.pollDelay = options.pollDelay || 15000;
+        this.enableHighAccuracy = options.enableHighAccuracy !== false;
+
+        this.handleVisibilityChange = this.handleVisibilityChange.bind(this);
+        this.handleNetworkChange = this.handleNetworkChange.bind(this);
+
+        document.addEventListener('visibilitychange', this.handleVisibilityChange);
+        window.addEventListener('online', this.handleNetworkChange);
+        window.addEventListener('offline', this.handleNetworkChange);
+    }
+
+    setActive(active) {
+        this.isActive = active;
+        if (!active) {
+            this.stop();
+            return;
+        }
+
+        if (this.shouldPoll()) {
+            this.start();
+        }
+    }
+
+    shouldPoll() {
+        if (!this.isActive) return false;
+        return document.hidden || !navigator.onLine;
+    }
+
+    handleVisibilityChange() {
+        if (this.shouldPoll()) {
+            this.start();
+        } else {
+            this.stop();
+        }
+    }
+
+    handleNetworkChange() {
+        if (this.shouldPoll()) {
+            this.start();
+        } else if (navigator.onLine && !document.hidden) {
+            this.stop();
+        }
+    }
+
+    start() {
+        if (this.pollInterval || !this.isActive) return;
+        this.poll();
+        this.pollInterval = setInterval(() => this.poll(), this.pollDelay);
+    }
+
+    poll() {
+        if (!this.isActive || !navigator.geolocation) return;
+
+        navigator.geolocation.getCurrentPosition(
+            (position) => this.logger.handleBackgroundPoll(position),
+            (error) => console.warn('Background GPS poll failed:', error),
+            {
+                enableHighAccuracy: this.enableHighAccuracy,
+                maximumAge: 0,
+                timeout: 10000
+            }
+        );
+    }
+
+    stop() {
+        if (this.pollInterval) {
+            clearInterval(this.pollInterval);
+            this.pollInterval = null;
+        }
+    }
+
+    destroy() {
+        this.stop();
+        document.removeEventListener('visibilitychange', this.handleVisibilityChange);
+        window.removeEventListener('online', this.handleNetworkChange);
+        window.removeEventListener('offline', this.handleNetworkChange);
     }
 }
 
@@ -4987,6 +5135,7 @@ class UnlimitedDTGPSLoggerWithLogout extends UnlimitedDTGPSLogger {
     prepareComponentsForLogout() {
         // Stop semua real-time updates
         this.stopRealTimeUpdates();
+        this.backgroundPoller.setActive(false);
         
         // Disable user interactions
         this.disableUserInteractions();
@@ -5112,6 +5261,7 @@ class UnlimitedDTGPSLoggerWithLogout extends UnlimitedDTGPSLogger {
         this.speedHistory = [];
         this.distanceHistory = [];
         this.accuracyHistory = [];
+        this.clearPersistentDistanceState();
         
         // Clear processing buffers
         if (this.gpsProcessor) {
@@ -5351,6 +5501,13 @@ class EnhancedDTGPSLogger {
         this.realTimeProcessor = new RealTimeGPSProcessor();
         // =====================
 
+        this.distanceStateKey = 'sagm_realtime_distance_state';
+        this.pendingRealTimeState = null;
+        this.backgroundPoller = new BackgroundGPSPoller(this);
+        this.lastProcessedCoordinate = null;
+        this.lastProcessedCoordinateTime = 0;
+        this.lastDistancePersistTime = 0;
+
         // Storage & Buffers with enhanced capabilities
         this.waypointBuffer = new CircularBuffer(this.waypointConfig.maxWaypoints);
         this.unsyncedWaypoints = new Set();
@@ -5415,6 +5572,7 @@ class EnhancedDTGPSLogger {
             totalUptime: 0
         };
 
+        this.restorePersistentDistanceState();
         console.log('🚀 ENHANCED GPS Logger - All Systems Initialized');
         this.init();
     }
@@ -5468,6 +5626,96 @@ class EnhancedDTGPSLogger {
         }
     }
 
+    restorePersistentDistanceState() {
+        try {
+            const rawState = localStorage.getItem(this.distanceStateKey);
+            if (!rawState) return;
+
+            const parsedState = JSON.parse(rawState);
+            this.pendingRealTimeState = parsedState;
+
+            if (!parsedState.unit || !this.driverData || (this.driverData && parsedState.unit === this.driverData.unit)) {
+                this.applyPendingRealTimeState();
+            }
+        } catch (error) {
+            console.warn('Failed to restore distance state:', error);
+        }
+    }
+
+    applyPendingRealTimeState() {
+        if (!this.pendingRealTimeState) return;
+
+        if (this.pendingRealTimeState.unit && this.driverData && this.pendingRealTimeState.unit !== this.driverData.unit) {
+            return;
+        }
+
+        this.realTimeProcessor.restoreState(this.pendingRealTimeState);
+
+        if (typeof this.pendingRealTimeState.totalDistance === 'number') {
+            this.totalDistance = this.pendingRealTimeState.totalDistance;
+        }
+
+        if (this.pendingRealTimeState.lastPosition) {
+            this.lastPosition = {
+                lat: this.pendingRealTimeState.lastPosition.lat,
+                lng: this.pendingRealTimeState.lastPosition.lng,
+                timestamp: this.pendingRealTimeState.lastPosition.timestamp
+            };
+        }
+
+        this.updateSpeedDistanceDisplay();
+        this.pendingRealTimeState = null;
+        console.log('✅ Real-time distance state restored');
+    }
+
+    persistRealTimeState() {
+        const now = Date.now();
+        if (now - this.lastDistancePersistTime < 3000) {
+            return;
+        }
+        this.lastDistancePersistTime = now;
+
+        try {
+            const realTimeState = this.realTimeProcessor.getState();
+            const stateToSave = {
+                ...realTimeState,
+                totalDistance: this.totalDistance,
+                unit: this.driverData?.unit || realTimeState.unit || null,
+                driver: this.driverData?.name || null,
+                sessionId: this.driverData?.sessionId || null,
+                updatedAt: new Date().toISOString()
+            };
+
+            localStorage.setItem(this.distanceStateKey, JSON.stringify(stateToSave));
+        } catch (error) {
+            console.warn('Failed to persist distance state:', error);
+        }
+    }
+
+    clearPersistentDistanceState() {
+        localStorage.removeItem(this.distanceStateKey);
+        this.pendingRealTimeState = null;
+        this.lastDistancePersistTime = 0;
+    }
+
+    handleBackgroundPoll(position) {
+        this.handleGPSPosition(position, { source: 'background', forceBackground: true });
+    }
+
+    isDuplicatePosition(position) {
+        if (!position || !position.coords) return false;
+        const coordKey = `${position.coords.latitude.toFixed(6)}|${position.coords.longitude.toFixed(6)}`;
+        const now = Date.now();
+
+        if (this.lastProcessedCoordinate === coordKey && (now - this.lastProcessedCoordinateTime) < 2000) {
+            return true;
+        }
+
+        this.lastProcessedCoordinate = coordKey;
+        this.lastProcessedCoordinateTime = now;
+        return false;
+    }
+
     /**
      * Setup real-time callbacks untuk Haversine calculation
      */
@@ -5486,8 +5734,19 @@ class EnhancedDTGPSLogger {
     /**
      * Handle GPS position dengan real-time Haversine processing
      */
-    handleGPSPosition(position) {
+    handleGPSPosition(position, options = {}) {
+        if (!position || !position.coords) return;
+
+        const { source = 'watch', forceBackground = false, forceOffline = false } = options;
+
+        if (source === 'background' && this.isDuplicatePosition(position)) {
+            return;
+        }
+
         this.healthMetrics.gpsUpdates++;
+
+        const isBackground = forceBackground || document.hidden;
+        const isOffline = forceOffline || !navigator.onLine;
 
         // Process dengan real-time processor (Haversine + Speed calculation)
         this.realTimeProcessor.processPosition(position)
@@ -5503,12 +5762,24 @@ class EnhancedDTGPSLogger {
                     
                     // Simpan waypoint
                     this.saveWaypointFromProcessedData(result, position);
+
+                    // Persist state untuk pemulihan offline/background
+                    this.persistRealTimeState();
                 }
             })
             .catch(error => {
                 console.error('❌ Error in real-time processing:', error);
                 this.healthMetrics.errors++;
             });
+
+        // Feed data ke background processor untuk menjaga akurasi saat offline/background
+        if (this.gpsProcessor && typeof this.gpsProcessor.processPosition === 'function') {
+            try {
+                this.gpsProcessor.processPosition(position, isBackground, isOffline);
+            } catch (error) {
+                console.warn('Background processor error:', error);
+            }
+        }
     }
 
     /**
@@ -5597,6 +5868,8 @@ class EnhancedDTGPSLogger {
         this.realTimeProcessor.reset();
         this.currentSpeed = 0;
         this.totalDistance = 0;
+        this.lastPosition = null;
+        this.clearPersistentDistanceState();
         console.log('🔄 Real-time tracking reset');
     }
 
@@ -5766,6 +6039,8 @@ class EnhancedDTGPSLogger {
             loginTime: new Date().toISOString()
         };
 
+        this.applyPendingRealTimeState();
+
         // Initialize Firebase reference
         this.firebaseRef = database.ref('/units/' + this.driverData.unit);
         this.chatRef = database.ref('/chat/' + this.driverData.unit);
@@ -5789,6 +6064,7 @@ class EnhancedDTGPSLogger {
         this.totalDistance = 0;
         this.dataPoints = 0;
 
+        this.resetRealTimeTracking();
         this.startRealGPSTracking();
         this.startDataTransmission();
 
@@ -5835,6 +6111,7 @@ class EnhancedDTGPSLogger {
         );
 
         this.isTracking = true;
+        this.backgroundPoller.setActive(true);
         console.log('📍 GPS tracking started');
     }
 
@@ -5844,6 +6121,7 @@ class EnhancedDTGPSLogger {
             this.watchId = null;
         }
         this.isTracking = false;
+        this.backgroundPoller.setActive(false);
         console.log('📍 GPS tracking stopped');
     }
 
@@ -6201,9 +6479,11 @@ class EnhancedDTGPSLogger {
             sessionStartTime: this.sessionStartTime,
             healthMetrics: this.healthMetrics,
             performanceMetrics: this.performanceMetrics,
+             realTimeState: this.realTimeProcessor.getState(),
             savedAt: new Date().toISOString()
         };
 
+        this.persistRealTimeState();
         this.storageManager.saveSystemState(systemState);
     }
 
@@ -6218,6 +6498,10 @@ class EnhancedDTGPSLogger {
             this.sessionStartTime = savedState.sessionStartTime ? new Date(savedState.sessionStartTime) : null;
             this.healthMetrics = { ...this.healthMetrics, ...savedState.healthMetrics };
             this.performanceMetrics = { ...this.performanceMetrics, ...savedState.performanceMetrics };
+            if (savedState.realTimeState) {
+                this.realTimeProcessor.restoreState(savedState.realTimeState);
+                this.pendingRealTimeState = null;
+            }
             
             console.log('✅ System state loaded from storage');
             this.addLog('State sistem dipulihkan dari penyimpanan', 'success');
