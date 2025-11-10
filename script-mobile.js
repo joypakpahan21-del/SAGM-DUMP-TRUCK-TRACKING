@@ -4214,12 +4214,12 @@ class OfflineQueueManager {
 // ===== RESUME MANAGER FOR BACKGROUND/OFFLINE RECOVERY =====
 class ResumeManager {
     constructor(gpsLogger) {
-        this.gpsLogger = gpsLogger;
+        this.gpsLogger = gpsLogger; 
         this.lastActiveTime = Date.now();
         this.wasInBackground = false;
         this.resumeCallbacks = [];
         this.backgroundStartTime = null;
-        this.maxBackgroundTime = 5 * 60 * 1000; // 5 minutes maximum background time
+        // Hapus batasan waktu 5 menit
         this.recoveryStats = {
             totalResumes: 0,
             backgroundResumes: 0,
@@ -4333,14 +4333,9 @@ class ResumeManager {
         this.recoveryStats.totalResumes++;
         this.recoveryStats.lastResume = new Date().toISOString();
         
-        // Check if background time was too long
-        if (backgroundTime > this.maxBackgroundTime) {
-            console.warn('⚠️ Extended background time detected, full recovery needed');
-            this.performFullRecovery();
-        } else {
-            // Normal background resume
-            this.resumeTracking();
-        }
+        // Hapus pengecekan batas waktu - selalu lakukan resume normal
+        // Tidak peduli berapa lama di background, tetap lakukan resume normal
+        this.resumeTracking();
         
         // Restore normal GPS accuracy
         if (this.gpsLogger.isTracking) {
