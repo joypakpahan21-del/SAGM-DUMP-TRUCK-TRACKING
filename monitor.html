@@ -446,6 +446,21 @@
                 right: 10px;
             }
         }
+
+        /* Chat Status Indicators */
+        .chat-status-online {
+            color: #28a745;
+            font-size: 10px;
+        }
+
+        .chat-status-offline {
+            color: #dc3545;
+            font-size: 10px;
+        }
+
+        .chat-unit-select {
+            max-width: 200px;
+        }
     </style>
 </head>
 <body>
@@ -730,7 +745,7 @@
             <div class="chat-header">
                 <h6 class="mb-0">💬 Chat dengan Driver</h6>
                 <div class="input-group input-group-sm">
-                    <select id="monitorChatUnitSelect" class="form-select form-select-sm">
+                    <select id="monitorChatUnitSelect" class="form-select form-select-sm chat-unit-select">
                         <option value="">Pilih Unit...</option>
                     </select>
                     <button type="button" class="btn-close btn-close-white" onclick="toggleMonitorChat()"></button>
@@ -769,21 +784,28 @@
     <div id="chatPanel" class="chat-panel hidden">
         <div class="chat-header">
             <h6 class="mb-0">💬 Chat dengan Driver</h6>
-            <button class="btn btn-sm btn-light" onclick="toggleChat()">
-                ✕
-            </button>
+            <div class="d-flex align-items-center gap-2">
+                <select id="chatUnitSelect" class="form-select form-select-sm chat-unit-select">
+                    <option value="">Pilih Driver...</option>
+                </select>
+                <button class="btn btn-sm btn-light" onclick="toggleChat()">
+                    ✕
+                </button>
+            </div>
         </div>
         
         <div id="chatMessages" class="chat-messages">
-            <!-- Messages will be loaded here -->
+            <div class="chat-placeholder text-center text-muted py-4">
+                <small>Pilih driver dari dropdown di atas untuk memulai percakapan...</small>
+            </div>
         </div>
         
         <div class="chat-input-container">
             <div class="input-group">
                 <input type="text" id="chatInput" class="form-control chat-input" 
-                       placeholder="Ketik pesan..." maxlength="500"
+                       placeholder="Ketik pesan..." maxlength="500" disabled
                        onkeypress="handleChatInput(event)">
-                <button id="sendChatButton" class="btn btn-primary" onclick="sendChatMessage()">
+                <button id="sendChatButton" class="btn btn-primary" onclick="sendChatMessage()" disabled>
                     Kirim
                 </button>
             </div>
@@ -811,153 +833,201 @@
     <!-- External JavaScript -->
     <script src="script-monitor.js"></script>
     
-    <!-- ✅ ENHANCED GLOBAL FUNCTIONS - IMPROVED CHAT INTERFACE -->
+    <!-- ✅ ENHANCED GLOBAL FUNCTIONS - REAL FIREBASE CHAT INTEGRATION -->
     <script>
-        // ✅ ENHANCED CHAT TOGGLE FUNCTION - Delegated to gpsSystem
-        function toggleMonitorChat() {
-            if (window.gpsSystem) {
-                window.gpsSystem.toggleMonitorChat();
-            } else {
-                console.warn('GPS System belum diinisialisasi');
-                // Fallback manual toggle
-                const chatWindow = document.getElementById('monitorChatWindow');
-                if (chatWindow) {
-                    const isVisible = chatWindow.style.display === 'flex';
-                    chatWindow.style.display = isVisible ? 'none' : 'flex';
-                    if (!isVisible) {
-                        chatWindow.style.animation = 'slideInUp 0.3s ease-out forwards';
+        // Firebase configuration - GANTI DENGAN KONFIGURASI FIREBASE ANDA
+        const firebaseConfig = {
+            apiKey: "your-api-key",
+            authDomain: "your-project.firebaseapp.com",
+            databaseURL: "https://your-project-default-rtdb.asia-southeast1.firebasedatabase.app",
+            projectId: "your-project",
+            storageBucket: "your-project.appspot.com",
+            messagingSenderId: "123456789",
+            appId: "your-app-id"
+        };
+
+        // Initialize Firebase
+        const app = firebase.initializeApp(firebaseConfig);
+        const database = firebase.database();
+
+        // Global variables for chat
+        let currentChatUnit = null;
+        let chatListeners = {};
+
+        // ✅ FIREBASE CHAT FUNCTIONS
+        function initializeFirebaseChat() {
+            console.log('🔥 Initializing Firebase Chat System');
+            
+            // Listen for new units to populate chat dropdown
+            database.ref('units').on('value', (snapshot) => {
+                const units = snapshot.val();
+                populateChatUnitSelect(units);
+            });
+        }
+
+        function populateChatUnitSelect(units) {
+            const unitSelect = document.getElementById('chatUnitSelect');
+            const monitorUnitSelect = document.getElementById('monitorChatUnitSelect');
+            
+            if (!unitSelect || !monitorUnitSelect) return;
+            
+            // Clear existing options except the first one
+            unitSelect.innerHTML = '<option value="">Pilih Driver...</option>';
+            monitorUnitSelect.innerHTML = '<option value="">Pilih Unit...</option>';
+            
+            if (units) {
+                Object.keys(units).forEach(unitId => {
+                    const unit = units[unitId];
+                    if (unit.unitName) {
+                        const option = document.createElement('option');
+                        option.value = unitId;
+                        option.textContent = `${unit.unitName} - ${unit.driverName || 'Driver'}`;
+                        
+                        const monitorOption = option.cloneNode(true);
+                        
+                        unitSelect.appendChild(option);
+                        monitorUnitSelect.appendChild(monitorOption);
                     }
-                }
-            }
-        }
-
-        // ✅ ENHANCED CHAT INPUT HANDLER - Delegated to gpsSystem
-        function handleMonitorChatInput(event) {
-            if (window.gpsSystem) {
-                window.gpsSystem.handleMonitorChatInput(event);
-            } else if (event.key === 'Enter') {
-                sendMonitorMessage();
-            }
-        }
-
-        // ✅ ENHANCED SEND MESSAGE FUNCTION - Delegated to gpsSystem
-        function sendMonitorMessage() {
-            if (window.gpsSystem) {
-                window.gpsSystem.sendMonitorMessage();
-            } else {
-                console.warn('GPS System belum diinisialisasi - tidak dapat mengirim pesan');
-            }
-        }
-
-        // ✅ ENHANCED UNIT SELECTION FUNCTION
-        function selectChatUnit(unitName) {
-            if (window.gpsSystem) {
-                window.gpsSystem.selectChatUnit(unitName);
-                
-                // Enable input when unit is selected
-                const input = document.getElementById('monitorChatInput');
-                const sendBtn = document.getElementById('monitorSendBtn');
-                if (input && sendBtn) {
-                    input.disabled = false;
-                    sendBtn.disabled = false;
-                    input.focus();
-                }
-            } else {
-                console.warn('GPS System belum diinisialisasi - tidak dapat memilih unit');
-            }
-        }
-
-        // ✅ NEW CHAT FUNCTIONS - FIXED ENTER KEY SUPPORT
-        function toggleChat() {
-            const chatPanel = document.getElementById('chatPanel');
-            if (chatPanel) {
-                chatPanel.classList.toggle('hidden');
-                
-                // Focus input when opening chat
-                if (!chatPanel.classList.contains('hidden')) {
-                    setTimeout(() => {
-                        const chatInput = document.getElementById('chatInput');
-                        if (chatInput) {
-                            chatInput.focus();
-                        }
-                    }, 300);
-                }
-            }
-        }
-
-        function initializeChat() {
-            const chatToggle = document.getElementById('chatToggle');
-            const chatPanel = document.getElementById('chatPanel');
-            const sendButton = document.getElementById('sendChatButton');
-            const chatInput = document.getElementById('chatInput');
-
-            if (chatToggle && chatPanel) {
-                chatToggle.addEventListener('click', function() {
-                    toggleChat();
                 });
             }
+        }
 
-            if (sendButton && chatInput) {
-                sendButton.addEventListener('click', sendChatMessage);
-                // Event listener for Enter key is now handled by handleChatInput function
+        function selectChatUnit(unitId) {
+            if (!unitId) {
+                showChatNotification('Pilih driver terlebih dahulu', 'warning');
+                return;
             }
+            
+            currentChatUnit = unitId;
+            
+            // Enable chat input
+            const chatInput = document.getElementById('chatInput');
+            const sendBtn = document.getElementById('sendChatButton');
+            if (chatInput && sendBtn) {
+                chatInput.disabled = false;
+                sendBtn.disabled = false;
+                chatInput.placeholder = "Ketik pesan untuk driver...";
+                chatInput.focus();
+            }
+            
+            // Load chat history
+            loadChatHistory(unitId);
+            
+            // Setup real-time listener for new messages
+            setupChatListener(unitId);
+            
+            showChatNotification(`Chat dengan ${getUnitName(unitId)} dimulai`, 'success');
+        }
 
-            console.log('✅ Chat system initialized');
+        function getUnitName(unitId) {
+            const unitSelect = document.getElementById('chatUnitSelect');
+            const option = unitSelect.querySelector(`option[value="${unitId}"]`);
+            return option ? option.textContent : 'Driver';
+        }
+
+        function loadChatHistory(unitId) {
+            const chatRef = database.ref(`chats/${unitId}`);
+            
+            chatRef.orderByChild('timestamp').limitToLast(50).once('value', (snapshot) => {
+                const messages = snapshot.val();
+                displayChatHistory(messages, unitId);
+            });
+        }
+
+        function setupChatListener(unitId) {
+            // Remove previous listener if exists
+            if (chatListeners[unitId]) {
+                chatListeners[unitId]();
+            }
+            
+            const chatRef = database.ref(`chats/${unitId}`);
+            
+            chatListeners[unitId] = chatRef.orderByChild('timestamp').limitToLast(1).on('child_added', (snapshot) => {
+                const message = snapshot.val();
+                if (message.sender !== 'monitor') { // Only show messages from driver
+                    addChatMessageToUI(message.sender, message.text, false, message.timestamp);
+                    updateChatBadge(1); // Show notification badge
+                }
+            });
+        }
+
+        function displayChatHistory(messages, unitId) {
+            const chatMessages = document.getElementById('chatMessages');
+            if (!chatMessages) return;
+            
+            // Clear existing messages
+            chatMessages.innerHTML = '';
+            
+            if (!messages) {
+                addChatMessageToUI('System', 'Belum ada pesan. Mulai percakapan sekarang!', false, Date.now());
+                return;
+            }
+            
+            // Convert messages to array and sort by timestamp
+            const messagesArray = Object.values(messages).sort((a, b) => a.timestamp - b.timestamp);
+            
+            messagesArray.forEach(message => {
+                const isSent = message.sender === 'monitor';
+                addChatMessageToUI(message.sender, message.text, isSent, message.timestamp);
+            });
+            
+            chatMessages.scrollTop = chatMessages.scrollHeight;
         }
 
         // ✅ FIXED CHAT INPUT HANDLER - SUPPORTS ENTER KEY
         function handleChatInput(event) {
             if (event.key === 'Enter') {
-                event.preventDefault(); // Prevent default form submission
+                event.preventDefault();
                 sendChatMessage();
                 return false;
             }
         }
 
-        // ✅ FIXED SEND CHAT MESSAGE FUNCTION
+        // ✅ REAL CHAT MESSAGE SENDING TO FIREBASE
         function sendChatMessage() {
+            if (!currentChatUnit) {
+                showChatNotification('Pilih driver terlebih dahulu', 'warning');
+                return;
+            }
+            
             const chatInput = document.getElementById('chatInput');
             const message = chatInput.value.trim();
             
             if (message) {
-                // Add message to chat
-                addChatMessage('Anda', message, true);
+                const messageData = {
+                    text: message,
+                    sender: 'monitor',
+                    timestamp: Date.now(),
+                    read: false
+                };
                 
-                // Clear input field
-                chatInput.value = '';
+                // Save to Firebase
+                const chatRef = database.ref(`chats/${currentChatUnit}`);
+                const newMessageRef = chatRef.push();
                 
-                // Re-focus input for next message
-                chatInput.focus();
+                newMessageRef.set(messageData)
+                    .then(() => {
+                        // Add message to UI immediately
+                        addChatMessageToUI('Anda', message, true, Date.now());
+                        
+                        // Clear input field
+                        chatInput.value = '';
+                        chatInput.focus();
+                        
+                        console.log('✅ Pesan terkirim ke Firebase');
+                    })
+                    .catch((error) => {
+                        console.error('❌ Gagal mengirim pesan:', error);
+                        showChatNotification('Gagal mengirim pesan', 'danger');
+                    });
                 
-                // Here you would typically send the message to the driver via Firebase
-                console.log('Mengirim pesan ke driver:', message);
-                
-                // Simulate response from driver (remove this in production)
-                setTimeout(() => {
-                    const responses = [
-                        "Pesan diterima, terima kasih!",
-                        "Saya sedang dalam perjalanan...",
-                        "OK, saya akan segera menuju lokasi",
-                        "Terima kasih atas informasinya",
-                        "Saya memahami instruksinya"
-                    ];
-                    const randomResponse = responses[Math.floor(Math.random() * responses.length)];
-                    addChatMessage('Driver Canter 01', randomResponse, false);
-                    
-                    // Update badge notification
-                    updateChatBadge(1);
-                }, 1500);
-                
-                // Show success feedback
-                showChatNotification('Pesan berhasil dikirim!', 'success');
             } else {
-                // Show error if message is empty
                 showChatNotification('Silakan ketik pesan terlebih dahulu', 'warning');
                 chatInput.focus();
             }
         }
 
-        function addChatMessage(sender, message, isSent) {
+        function addChatMessageToUI(sender, message, isSent, timestamp) {
             const chatMessages = document.getElementById('chatMessages');
             if (!chatMessages) return;
 
@@ -970,14 +1040,16 @@
             const messageDiv = document.createElement('div');
             messageDiv.className = `chat-message ${isSent ? 'message-sent' : 'message-received'}`;
             
-            const now = new Date();
-            const timeString = now.toLocaleTimeString('id-ID', { 
+            const time = new Date(timestamp);
+            const timeString = time.toLocaleTimeString('id-ID', { 
                 hour: '2-digit', 
                 minute: '2-digit' 
             });
             
+            const displayName = isSent ? 'Anda' : (sender === 'driver' ? 'Driver' : sender);
+            
             messageDiv.innerHTML = `
-                ${!isSent ? `<div class="message-sender">${sender}</div>` : ''}
+                ${!isSent ? `<div class="message-sender">${displayName}</div>` : ''}
                 <div>${message}</div>
                 <div class="message-time">${timeString} ${isSent ? '✓' : ''}</div>
             `;
@@ -987,6 +1059,46 @@
             
             // Add animation
             messageDiv.style.animation = 'slideInUp 0.3s ease-out';
+        }
+
+        // ✅ ENHANCED CHAT TOGGLE FUNCTION
+        function toggleChat() {
+            const chatPanel = document.getElementById('chatPanel');
+            if (chatPanel) {
+                chatPanel.classList.toggle('hidden');
+                
+                // Focus input when opening chat
+                if (!chatPanel.classList.contains('hidden')) {
+                    setTimeout(() => {
+                        const chatInput = document.getElementById('chatInput');
+                        if (chatInput && !chatInput.disabled) {
+                            chatInput.focus();
+                        }
+                    }, 300);
+                }
+            }
+        }
+
+        function initializeChat() {
+            const chatToggle = document.getElementById('chatToggle');
+            const chatPanel = document.getElementById('chatPanel');
+            const sendButton = document.getElementById('sendChatButton');
+            const chatInput = document.getElementById('chatInput');
+            const unitSelect = document.getElementById('chatUnitSelect');
+
+            if (chatToggle && chatPanel) {
+                chatToggle.addEventListener('click', function() {
+                    toggleChat();
+                });
+            }
+
+            if (unitSelect) {
+                unitSelect.addEventListener('change', function() {
+                    selectChatUnit(this.value);
+                });
+            }
+
+            console.log('✅ Chat system initialized');
         }
 
         function updateChatBadge(count) {
@@ -1020,6 +1132,34 @@
             }, 3000);
         }
 
+        // ✅ OTHER EXISTING FUNCTIONS (tetap sama)
+        function toggleMonitorChat() {
+            if (window.gpsSystem) {
+                window.gpsSystem.toggleMonitorChat();
+            } else {
+                console.warn('GPS System belum diinisialisasi');
+                const chatWindow = document.getElementById('monitorChatWindow');
+                if (chatWindow) {
+                    const isVisible = chatWindow.style.display === 'flex';
+                    chatWindow.style.display = isVisible ? 'none' : 'flex';
+                }
+            }
+        }
+
+        function handleMonitorChatInput(event) {
+            if (window.gpsSystem) {
+                window.gpsSystem.handleMonitorChatInput(event);
+            } else if (event.key === 'Enter') {
+                sendMonitorMessage();
+            }
+        }
+
+        function sendMonitorMessage() {
+            if (window.gpsSystem) {
+                window.gpsSystem.sendMonitorMessage();
+            }
+        }
+
         // ✅ ENHANCED REAL-TIME CLOCK
         function updateClock() {
             const now = new Date();
@@ -1031,152 +1171,71 @@
         setInterval(updateClock, 1000);
         updateClock();
 
-        // ✅ ENHANCED FORCE CLEANUP FUNCTION
+        // ✅ ENHANCED SYSTEM READY CHECK
+        document.addEventListener('DOMContentLoaded', function() {
+            console.log('🚀 DOM Content Loaded - Initializing Systems');
+            
+            // Initialize clock immediately
+            updateClock();
+            
+            // Initialize chat interface
+            initializeChat();
+            
+            // Initialize Firebase chat system
+            initializeFirebaseChat();
+            
+            // Add demo message
+            setTimeout(() => {
+                const chatMessages = document.getElementById('chatMessages');
+                if (chatMessages) {
+                    const placeholder = chatMessages.querySelector('.chat-placeholder');
+                    if (placeholder) {
+                        placeholder.innerHTML = '<small>Pilih driver dari dropdown di atas untuk memulai percakapan real-time dengan driver mobile</small>';
+                    }
+                }
+            }, 1000);
+        });
+
+        // ✅ Existing functions tetap sama
         function forceCleanup() {
             if (window.gpsSystem) {
                 window.gpsSystem.forceCleanupAllData();
                 alert('Force cleanup executed! All sticky data removed.');
-            } else {
-                console.warn('GPS System belum diinisialisasi - tidak dapat melakukan cleanup');
-                alert('Sistem belum siap. Tunggu beberapa saat dan coba lagi.');
             }
         }
 
-        // ✅ ENHANCED REFRESH FUNCTION
         function refreshData() {
             if (window.gpsSystem) {
                 window.gpsSystem.refreshData();
             } else {
-                console.warn('GPS System belum diinisialisasi - tidak dapat refresh data');
-                location.reload(); // Fallback reload
+                location.reload();
             }
         }
 
-        // ✅ ENHANCED EXPORT FUNCTION
         function exportData() {
             if (window.gpsSystem) {
                 window.gpsSystem.downloadRouteData();
-            } else {
-                console.warn('GPS System belum diinisialisasi - tidak dapat export data');
-                alert('Sistem belum siap untuk export data.');
             }
         }
 
-        // ✅ ENHANCED SIDEBAR TOGGLE FUNCTION
         function toggleSidebar() {
             const sidebar = document.querySelector('.sidebar');
             const body = document.body;
-            
             if (sidebar) {
                 sidebar.classList.toggle('show');
                 body.classList.toggle('sidebar-open');
             }
         }
 
-        // ✅ ENHANCED CLICK OUTSIDE HANDLER FOR CHAT
+        // Click outside handler
         document.addEventListener('click', function(event) {
-            const chatContainer = document.getElementById('monitorChatContainer');
-            const chatWindow = document.getElementById('monitorChatWindow');
-            const toggleBtn = document.getElementById('monitorChatToggle');
-            
-            if (chatWindow && chatWindow.style.display === 'flex' && 
-                !chatContainer.contains(event.target) && 
-                event.target !== toggleBtn) {
-                toggleMonitorChat();
-            }
-
-            // For new chat interface
-            const newChatPanel = document.getElementById('chatPanel');
-            const newChatToggle = document.getElementById('chatToggle');
-            
-            if (newChatPanel && !newChatPanel.classList.contains('hidden') && 
-                !newChatPanel.contains(event.target) && 
-                event.target !== newChatToggle) {
+            const chatPanel = document.getElementById('chatPanel');
+            const chatToggle = document.getElementById('chatToggle');
+            if (chatPanel && !chatPanel.classList.contains('hidden') && 
+                !chatPanel.contains(event.target) && 
+                event.target !== chatToggle) {
                 toggleChat();
             }
-        });
-
-        // ✅ ENHANCED ERROR HANDLING FOR MISSING GPS SYSTEM
-        document.addEventListener('DOMContentLoaded', function() {
-            console.log('🚀 DOM Content Loaded - Initializing GPS Tracking System');
-            
-            // Initialize clock immediately
-            updateClock();
-            
-            // Initialize new chat interface
-            initializeChat();
-            
-            // Add demo messages
-            setTimeout(() => {
-                addChatMessage('System', 'Selamat datang di chat dengan driver!', false);
-                addChatMessage('System', 'Ketik pesan dan tekan Enter atau klik Kirim untuk mengirim.', false);
-            }, 1000);
-            
-            // Check if gpsSystem is available after a short delay
-            const checkSystemReady = setInterval(() => {
-                if (window.gpsSystem) {
-                    console.log('✅ GPS System successfully initialized');
-                    clearInterval(checkSystemReady);
-                    
-                    // Update connection status
-                    if (window.gpsSystem.updateConnectionStatus) {
-                        // Simulate connected status
-                        window.gpsSystem.updateConnectionStatus(true);
-                    }
-                }
-            }, 500);
-
-            // Timeout after 10 seconds
-            setTimeout(() => {
-                if (!window.gpsSystem) {
-                    console.error('❌ GPS System failed to initialize within timeout period');
-                    clearInterval(checkSystemReady);
-                    
-                    // Show error state for chat
-                    const chatInput = document.getElementById('monitorChatInput');
-                    const sendBtn = document.getElementById('monitorSendBtn');
-                    if (chatInput && sendBtn) {
-                        chatInput.placeholder = 'Sistem gagal dimuat - Refresh halaman';
-                        chatInput.disabled = true;
-                        sendBtn.disabled = true;
-                    }
-                    
-                    // Update Firebase status
-                    const firebaseStatus = document.getElementById('firebaseStatus');
-                    if (firebaseStatus) {
-                        firebaseStatus.innerHTML = '🔴 FIREBASE GAGAL';
-                        firebaseStatus.className = 'connection-status connection-offline';
-                    }
-                }
-            }, 10000);
-        });
-
-        // ✅ ENHANCED SYSTEM READY CHECK
-        window.addEventListener('load', function() {
-            console.log('📦 Page fully loaded');
-            
-            // Hide loading spinner after system is ready
-            setTimeout(() => {
-                const loadingSpinner = document.getElementById('loadingSpinner');
-                if (loadingSpinner) {
-                    loadingSpinner.classList.add('d-none');
-                }
-            }, 2000);
-        });
-
-        // ✅ GLOBAL ERROR HANDLER
-        window.addEventListener('error', function(event) {
-            console.error('Global error caught:', event.error);
-            
-            const notification = document.createElement('div');
-            notification.className = 'alert alert-danger alert-dismissible fade show';
-            notification.style.cssText = 'position: fixed; top: 20px; right: 20px; z-index: 9999; min-width: 300px;';
-            notification.innerHTML = `
-                <strong>Error:</strong> ${event.error?.message || 'Terjadi kesalahan sistem'}
-                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-            `;
-            
-            document.body.appendChild(notification);
         });
     </script>
 </body>
