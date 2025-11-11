@@ -26,6 +26,10 @@ class HaversineDistanceSpeedCalculator {
         this.currentSpeed = 0;
         this.lastPosition = null;
         this.lastCalculationTime = null;
+        this.processingQueue = [];
+        this.isProcessing = false;
+        this.lastFirebaseSend = 0;
+        this.firebaseDebounceDelay = 1000;
         
         // Constants
         this.EARTH_RADIUS_KM = 6371;
@@ -194,9 +198,6 @@ class HaversineDistanceSpeedCalculator {
         };
     }
 
-    /**
-     * Restore persistent state dari penyimpanan
-     */
     restoreState(state) {
         if (!state || typeof state !== 'object') return;
 
@@ -216,20 +217,9 @@ class HaversineDistanceSpeedCalculator {
             this.lastCalculationTime = new Date(state.lastCalculationTime);
         }
     }
-
-    /**
-     * Reset calculator
-     */
-    reset() {
-        this.positionHistory = [];
-        this.totalDistance = 0;
-        this.currentSpeed = 0;
-        this.lastPosition = null;
-        this.lastCalculationTime = null;
-        console.log('🔄 Haversine Calculator reset');
-    }
 }
 
+   
 // ===== REAL-TIME GPS PROCESSOR =====
 class RealTimeGPSProcessor {
     constructor() {
@@ -422,6 +412,14 @@ class RealTimeGPSProcessor {
             timestamp: null
         };
         console.log('🔄 Real-time GPS Processor reset');
+    }
+
+    getState() {
+        return this.distanceCalculator.getState();
+    }
+
+    restoreState(state) {
+        this.distanceCalculator.restoreState(state);
     }
 }
 
@@ -2371,6 +2369,7 @@ class EnhancedRetryManager {
 }
 
 // ===== ENHANCED STORAGE MANAGER =====
+// ===== PERBAIKAN ENHANCED STORAGE MANAGER =====
 class EnhancedStorageManager {
     constructor() {
         this.STORAGE_KEYS = {
@@ -2387,12 +2386,12 @@ class EnhancedStorageManager {
         };
         
         this.QUOTA_LIMITS = {
-            MAX_WAYPOINTS: 250000, // 250K waypoints
+            MAX_WAYPOINTS: 250000,
             WARNING_THRESHOLD: 200000,
             CRITICAL_THRESHOLD: 230000,
-            COMPRESSION_THRESHOLD: 50000, // Compress after 50K points
-            ARCHIVE_THRESHOLD: 100000, // Archive after 100K points
-            CLEANUP_PERCENTAGE: 0.15 // Clean 15% when full
+            COMPRESSION_THRESHOLD: 50000,
+            ARCHIVE_THRESHOLD: 100000,
+            CLEANUP_PERCENTAGE: 0.15
         };
         
         this.compressionEnabled = true;
@@ -2400,6 +2399,8 @@ class EnhancedStorageManager {
         
         this.init();
     }
+
+    // === METHOD YANG DIPERBAIKI DAN DITAMBAHKAN ===
 
     init() {
         this.ensureStorageStructure();
@@ -2409,7 +2410,7 @@ class EnhancedStorageManager {
 
     ensureStorageStructure() {
         try {
-            // Initialize with empty arrays if not exists
+            // Initialize dengan empty arrays jika tidak exists
             if (!localStorage.getItem(this.STORAGE_KEYS.WAYPOINTS)) {
                 localStorage.setItem(this.STORAGE_KEYS.WAYPOINTS, JSON.stringify([]));
             }
@@ -2420,332 +2421,20 @@ class EnhancedStorageManager {
                 localStorage.setItem(this.STORAGE_KEYS.ARCHIVED_DATA, JSON.stringify([]));
             }
 
-            // Initialize metadata
-            if (!localStorage.getItem(this.STORAGE_KEYS.STORAGE_METADATA)) {
-                this.updateStorageMetadata({
-                    totalStored: 0,
-                    compressedCount: 0,
-                    archivedCount: 0,
-                    compressionRatio: 1.0,
-                    lastMaintenance: new Date().toISOString(),
-                    storageVersion: '2.0'
-                });
-            }
-
-            // Initialize other storage keys
-            const defaultKeys = [
-                this.STORAGE_KEYS.SYNC_STATUS,
-                this.STORAGE_KEYS.SESSION_DATA,
-                this.STORAGE_KEYS.DRIVER_PROFILES,
-                this.STORAGE_KEYS.VEHICLE_PROFILES,
-                this.STORAGE_KEYS.SYSTEM_STATE,
-                this.STORAGE_KEYS.APP_SETTINGS
-            ];
-
-            defaultKeys.forEach(key => {
-                if (!localStorage.getItem(key)) {
-                    localStorage.setItem(key, JSON.stringify({}));
-                }
-            });
-
             console.log('✅ Enhanced storage structure initialized');
         } catch (error) {
             console.error('❌ Error initializing storage structure:', error);
         }
     }
 
-    migrateOldData() {
-        // Migrate from old storage format if exists
-        const oldWaypoints = localStorage.getItem('enhanced_gps_waypoints');
-        if (oldWaypoints) {
-            try {
-                const waypoints = JSON.parse(oldWaypoints);
-                this.saveToStorage(waypoints);
-                localStorage.removeItem('enhanced_gps_waypoints');
-                console.log('✅ Migrated old waypoints data');
-            } catch (error) {
-                console.error('❌ Error migrating old data:', error);
-            }
-        }
-    }
-
-    startStorageMonitor() {
-        // Monitor storage every 5 minutes
-        setInterval(() => {
-            this.checkStorageHealth();
-        }, 300000);
-    }
-
-    async saveWaypoint(waypoint) {
-        try {
-            if (!waypoint || !waypoint.id) {
-                throw new Error('Invalid waypoint data');
-            }
-
-            let allWaypoints = this.loadAllWaypoints();
-            
-            // Check if we need compression or archiving
-            if (allWaypoints.length >= this.QUOTA_LIMITS.COMPRESSION_THRESHOLD && this.compressionEnabled) {
-                console.log('📦 Compressing waypoint data...');
-                allWaypoints = await this.compressWaypoints(allWaypoints);
-            }
-
-            if (allWaypoints.length >= this.QUOTA_LIMITS.ARCHIVE_THRESHOLD && this.autoArchiveEnabled) {
-                console.log('🗃️ Archiving old waypoints...');
-                allWaypoints = this.archiveOldWaypoints(allWaypoints);
-            }
-
-            // Check storage limits
-            if (allWaypoints.length >= this.QUOTA_LIMITS.MAX_WAYPOINTS) {
-                console.warn('🚨 Storage limit reached, performing emergency cleanup');
-                allWaypoints = this.performEmergencyCleanup(allWaypoints);
-            }
-
-            const existingIndex = allWaypoints.findIndex(wp => wp.id === waypoint.id);
-            
-            if (existingIndex >= 0) {
-                // Update existing waypoint
-                allWaypoints[existingIndex] = {
-                    ...allWaypoints[existingIndex],
-                    ...waypoint,
-                    updatedAt: new Date().toISOString(),
-                    updateCount: (allWaypoints[existingIndex].updateCount || 0) + 1
-                };
-            } else {
-                // Add new waypoint with enhanced metadata
-                const enhancedWaypoint = {
-                    ...waypoint,
-                    createdAt: new Date().toISOString(),
-                    storageVersion: '2.0',
-                    dataQuality: this.assessDataQuality(waypoint),
-                    sizeEstimate: this.calculateSize(waypoint),
-                    compressionState: 'raw'
-                };
-                allWaypoints.push(enhancedWaypoint);
-            }
-
-            this.saveToStorage(allWaypoints);
-            
-            // Update sync status
-            this.updateSyncStatus({
-                totalWaypoints: allWaypoints.length,
-                unsyncedCount: allWaypoints.filter(w => !w.synced).length,
-                lastSave: new Date().toISOString(),
-                storageHealth: this.checkStorageHealth()
-            });
-
-            // Update storage metadata
-            this.updateStorageMetadata({
-                totalStored: allWaypoints.length,
-                lastUpdate: new Date().toISOString()
-            });
-
-            return true;
-            
-        } catch (error) {
-            console.error('❌ Failed to save waypoint:', error);
-            
-            // Emergency fallback: try to save with minimal data
-            if (error.name === 'QuotaExceededError') {
-                return this.emergencySave(waypoint);
-            }
-            
-            return false;
-        }
-    }
-
-    async compressWaypoints(waypoints) {
-        if (!this.compressionEnabled) return waypoints;
-
-        try {
-            console.log('🔧 Compressing waypoint data...');
-            
-            // Simple compression: remove redundant data and use smaller keys
-            const compressed = waypoints.map(wp => ({
-                i: wp.id, // id
-                la: wp.lat, // lat
-                ln: wp.lng, // lng
-                t: wp.timestamp, // timestamp
-                s: wp.synced, // synced
-                a: wp.accuracy, // accuracy
-                sp: wp.speed, // speed
-                c: wp.confidence // confidence
-                // Remove less critical fields for compression
-            }));
-
-            // Store compressed data
-            const existingCompressed = this.loadCompressedData();
-            existingCompressed.push({
-                batchId: `compressed_${Date.now()}`,
-                originalCount: waypoints.length,
-                compressedCount: compressed.length,
-                compressionRatio: (waypoints.length / compressed.length).toFixed(2),
-                compressedAt: new Date().toISOString(),
-                data: compressed
-            });
-
-            localStorage.setItem(this.STORAGE_KEYS.COMPRESSED_DATA, JSON.stringify(existingCompressed));
-            
-            // Update metadata
-            this.updateStorageMetadata({
-                compressedCount: existingCompressed.length,
-                compressionRatio: (waypoints.length / compressed.length)
-            });
-
-            console.log(`✅ Compressed ${waypoints.length} waypoints`);
-            
-            // Return empty array since data is now compressed
-            return [];
-
-        } catch (error) {
-            console.error('❌ Compression failed:', error);
-            return waypoints; // Return original data if compression fails
-        }
-    }
-
-    archiveOldWaypoints(waypoints) {
-        if (!this.autoArchiveEnabled) return waypoints;
-
-        try {
-            console.log('🗃️ Archiving old waypoints...');
-            
-            const now = new Date();
-            const archiveThreshold = new Date(now.getTime() - (7 * 24 * 60 * 60 * 1000)); // 7 days ago
-            
-            const toArchive = waypoints.filter(wp => {
-                const wpDate = new Date(wp.createdAt || wp.timestamp);
-                return wpDate < archiveThreshold && wp.synced; // Only archive synced old data
-            });
-
-            const toKeep = waypoints.filter(wp => {
-                const wpDate = new Date(wp.createdAt || wp.timestamp);
-                return wpDate >= archiveThreshold || !wp.synced; // Keep recent or unsynced data
-            });
-
-            if (toArchive.length > 0) {
-                const existingArchived = this.loadArchivedData();
-                existingArchived.push({
-                    archiveId: `archive_${Date.now()}`,
-                    archivedAt: new Date().toISOString(),
-                    count: toArchive.length,
-                    data: toArchive
-                });
-
-                localStorage.setItem(this.STORAGE_KEYS.ARCHIVED_DATA, JSON.stringify(existingArchived));
-                
-                // Update metadata
-                this.updateStorageMetadata({
-                    archivedCount: existingArchived.length
-                });
-
-                console.log(`✅ Archived ${toArchive.length} old waypoints`);
-            }
-
-            return toKeep;
-
-        } catch (error) {
-            console.error('❌ Archiving failed:', error);
-            return waypoints;
-        }
-    }
-
-    performEmergencyCleanup(waypoints) {
-        console.warn('🚨 Performing emergency storage cleanup');
-        
-        // Remove oldest synced waypoints first
-        const synced = waypoints.filter(wp => wp.synced);
-        const unsynced = waypoints.filter(wp => !wp.synced);
-        
-        // Sort synced by creation date (oldest first)
-        synced.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
-        
-        // Remove oldest 15%
-        const removeCount = Math.floor(waypoints.length * this.QUOTA_LIMITS.CLEANUP_PERCENTAGE);
-        const remainingSynced = synced.slice(removeCount);
-        
-        // Combine back with unsynced
-        const cleaned = [...remainingSynced, ...unsynced];
-        
-        console.log(`🧹 Emergency cleanup: Removed ${removeCount} waypoints, ${cleaned.length} remaining`);
-        
-        return cleaned;
-    }
-
-    emergencySave(waypoint) {
-        try {
-            // Extreme minimal save - only critical data
-            const emergencyData = {
-                id: waypoint.id,
-                lat: waypoint.lat,
-                lng: waypoint.lng,
-                t: waypoint.timestamp, // truncated key
-                s: false // synced
-            };
-
-            const emergencyKey = 'emergency_gps_data';
-            let emergencyStorage = localStorage.getItem(emergencyKey);
-            let data = emergencyStorage ? JSON.parse(emergencyStorage) : [];
-            
-            data.push(emergencyData);
-            
-            // Keep only last 1000 emergency points
-            if (data.length > 1000) {
-                data = data.slice(-1000);
-            }
-            
-            localStorage.setItem(emergencyKey, JSON.stringify(data));
-            console.warn('🚨 Saved to emergency storage');
-            return true;
-            
-        } catch (error) {
-            console.error('❌ Emergency save failed:', error);
-            return false;
-        }
-    }
-
-    calculateSize(obj) {
-        // Rough size estimation in bytes
-        return JSON.stringify(obj).length;
-    }
-
-    assessDataQuality(waypoint) {
-        let qualityScore = 1.0;
-        
-        // Deduct points for poor accuracy
-        if (waypoint.accuracy > 50) qualityScore -= 0.3;
-        else if (waypoint.accuracy > 25) qualityScore -= 0.1;
-        
-        // Deduct points for low speed confidence
-        if (waypoint.enhancedSpeed !== undefined) {
-            if (waypoint.enhancedSpeed === 0) qualityScore -= 0.2;
-        }
-        
-        // Bonus for Kalman filtered data
-        if (waypoint.kalmanFiltered) qualityScore += 0.1;
-        
-        return Math.max(0.1, Math.min(1.0, qualityScore));
-    }
+    // === METHOD BARU YANG DIPERLUKAN ===
 
     loadAllWaypoints() {
         try {
             const data = localStorage.getItem(this.STORAGE_KEYS.WAYPOINTS);
-            if (!data) return [];
-            
-            const waypoints = JSON.parse(data);
-            
-            // Validate loaded data
-            if (!Array.isArray(waypoints)) {
-                console.error('❌ Invalid waypoints data structure, resetting...');
-                this.saveToStorage([]);
-                return [];
-            }
-            
-            return waypoints;
-            
+            return data ? JSON.parse(data) : [];
         } catch (error) {
             console.error('❌ Failed to load waypoints:', error);
-            // Reset corrupted storage
-            this.saveToStorage([]);
             return [];
         }
     }
@@ -2753,11 +2442,6 @@ class EnhancedStorageManager {
     loadUnsyncedWaypoints() {
         const all = this.loadAllWaypoints();
         return all.filter(waypoint => !waypoint.synced);
-    }
-
-    loadRecentWaypoints(limit = 100) {
-        const all = this.loadAllWaypoints();
-        return all.slice(-limit).reverse(); // Most recent first
     }
 
     markWaypointsAsSynced(waypointIds) {
@@ -2771,22 +2455,13 @@ class EnhancedStorageManager {
                     return { 
                         ...waypoint, 
                         synced: true,
-                        syncedAt: new Date().toISOString(),
-                        syncAttempts: (waypoint.syncAttempts || 0) + 1
+                        syncedAt: new Date().toISOString()
                     };
                 }
                 return waypoint;
             });
             
             this.saveToStorage(updated);
-            
-            this.updateSyncStatus({
-                totalWaypoints: updated.length,
-                unsyncedCount: updated.filter(w => !w.synced).length,
-                lastSync: new Date().toISOString(),
-                lastSyncCount: markedCount
-            });
-            
             console.log(`✅ Marked ${markedCount} waypoints as synced`);
             return markedCount;
             
@@ -2801,71 +2476,50 @@ class EnhancedStorageManager {
             localStorage.setItem(this.STORAGE_KEYS.WAYPOINTS, JSON.stringify(waypoints));
         } catch (error) {
             console.error('❌ Error saving to storage:', error);
-            
-            // Handle quota exceeded error
-            if (error.name === 'QuotaExceededError') {
-                console.warn('📦 Storage quota exceeded, performing emergency cleanup...');
-                const reducedWaypoints = this.performEmergencyCleanup(waypoints);
-                localStorage.setItem(this.STORAGE_KEYS.WAYPOINTS, JSON.stringify(reducedWaypoints));
+        }
+    }
+
+    saveWaypoint(waypoint) {
+        try {
+            if (!waypoint || !waypoint.id) {
+                throw new Error('Invalid waypoint data');
             }
-        }
-    }
 
-    updateSyncStatus(status) {
-        try {
-            const existing = this.getSyncStatus();
-            const updatedStatus = {
-                ...existing,
-                ...status,
-                updatedAt: new Date().toISOString(),
-                storageHealth: this.checkStorageHealth()
-            };
+            let allWaypoints = this.loadAllWaypoints();
             
-            localStorage.setItem(this.STORAGE_KEYS.SYNC_STATUS, JSON.stringify(updatedStatus));
-        } catch (error) {
-            console.error('❌ Error updating sync status:', error);
-        }
-    }
+            const existingIndex = allWaypoints.findIndex(wp => wp.id === waypoint.id);
+            
+            if (existingIndex >= 0) {
+                // Update existing waypoint
+                allWaypoints[existingIndex] = {
+                    ...allWaypoints[existingIndex],
+                    ...waypoint,
+                    updatedAt: new Date().toISOString()
+                };
+            } else {
+                // Add new waypoint
+                const enhancedWaypoint = {
+                    ...waypoint,
+                    createdAt: new Date().toISOString(),
+                    storageVersion: '2.0'
+                };
+                allWaypoints.push(enhancedWaypoint);
+            }
 
-    getSyncStatus() {
-        try {
-            const data = localStorage.getItem(this.STORAGE_KEYS.SYNC_STATUS);
-            const defaultStatus = {
-                totalWaypoints: 0,
-                unsyncedCount: 0,
-                lastSync: null,
-                lastSave: null,
-                firstSave: new Date().toISOString(),
-                updatedAt: new Date().toISOString(),
-                storageHealth: 'unknown'
-            };
+            this.saveToStorage(allWaypoints);
+            console.log('✅ Waypoint saved successfully');
+            return true;
             
-            return data ? JSON.parse(data) : defaultStatus;
         } catch (error) {
-            console.error('❌ Error getting sync status:', error);
-            return {
-                totalWaypoints: 0,
-                unsyncedCount: 0,
-                lastSync: null,
-                lastSave: null,
-                firstSave: new Date().toISOString(),
-                updatedAt: new Date().toISOString(),
-                storageHealth: 'error'
-            };
+            console.error('❌ Failed to save waypoint:', error);
+            return false;
         }
     }
 
     checkStorageHealth() {
         try {
             const waypoints = this.loadAllWaypoints();
-            const compressed = this.loadCompressedData();
-            const archived = this.loadArchivedData();
-            
-            const totalPoints = waypoints.length + 
-                               compressed.reduce((sum, batch) => sum + batch.compressedCount, 0) +
-                               archived.reduce((sum, archive) => sum + archive.count, 0);
-            
-            const usagePercentage = (totalPoints / this.QUOTA_LIMITS.MAX_WAYPOINTS) * 100;
+            const usagePercentage = (waypoints.length / this.QUOTA_LIMITS.MAX_WAYPOINTS) * 100;
             
             if (usagePercentage >= 95) return 'critical';
             if (usagePercentage >= 80) return 'warning';
@@ -2876,93 +2530,20 @@ class EnhancedStorageManager {
         }
     }
 
-    updateStorageMetadata(metadata) {
-        try {
-            const existing = this.getStorageMetadata();
-            const updated = {
-                ...existing,
-                ...metadata,
-                updatedAt: new Date().toISOString()
-            };
-            
-            localStorage.setItem(this.STORAGE_KEYS.STORAGE_METADATA, JSON.stringify(updated));
-        } catch (error) {
-            console.error('❌ Error updating storage metadata:', error);
-        }
-    }
-
-    getStorageMetadata() {
-        try {
-            const data = localStorage.getItem(this.STORAGE_KEYS.STORAGE_METADATA);
-            return data ? JSON.parse(data) : {
-                totalStored: 0,
-                compressedCount: 0,
-                archivedCount: 0,
-                compressionRatio: 1.0,
-                lastMaintenance: new Date().toISOString(),
-                storageVersion: '2.0',
-                createdAt: new Date().toISOString()
-            };
-        } catch (error) {
-            console.error('❌ Error getting storage metadata:', error);
-            return {};
-        }
-    }
-
-    loadCompressedData() {
-        try {
-            const data = localStorage.getItem(this.STORAGE_KEYS.COMPRESSED_DATA);
-            return data ? JSON.parse(data) : [];
-        } catch (error) {
-            console.error('❌ Error loading compressed data:', error);
-            return [];
-        }
-    }
-
-    loadArchivedData() {
-        try {
-            const data = localStorage.getItem(this.STORAGE_KEYS.ARCHIVED_DATA);
-            return data ? JSON.parse(data) : [];
-        } catch (error) {
-            console.error('❌ Error loading archived data:', error);
-            return [];
-        }
-    }
-
     getEnhancedStorageStatistics() {
         const waypoints = this.loadAllWaypoints();
-        const compressed = this.loadCompressedData();
-        const archived = this.loadArchivedData();
-        const metadata = this.getStorageMetadata();
         
-        const totalPoints = waypoints.length + 
-                           compressed.reduce((sum, batch) => sum + batch.compressedCount, 0) +
-                           archived.reduce((sum, archive) => sum + archive.count, 0);
-
         return {
             capacity: {
                 maxWaypoints: this.QUOTA_LIMITS.MAX_WAYPOINTS,
-                currentUsage: totalPoints,
-                usagePercentage: ((totalPoints / this.QUOTA_LIMITS.MAX_WAYPOINTS) * 100).toFixed(1) + '%',
+                currentUsage: waypoints.length,
+                usagePercentage: ((waypoints.length / this.QUOTA_LIMITS.MAX_WAYPOINTS) * 100).toFixed(1) + '%',
                 health: this.checkStorageHealth()
             },
             breakdown: {
                 active: waypoints.length,
-                compressed: compressed.reduce((sum, batch) => sum + batch.compressedCount, 0),
-                archived: archived.reduce((sum, archive) => sum + archive.count, 0),
-                total: totalPoints
-            },
-            compression: {
-                enabled: this.compressionEnabled,
-                batches: compressed.length,
-                averageRatio: metadata.compressionRatio || 1.0
-            },
-            archiving: {
-                enabled: this.autoArchiveEnabled,
-                archives: archived.length
-            },
-            syncStatus: this.getSyncStatus(),
-            metadata: metadata
+                total: waypoints.length
+            }
         };
     }
 
@@ -5520,22 +5101,22 @@ class EnhancedDTGPSLogger {
     constructor() {
         // Enhanced Configuration with detailed settings
         this.waypointConfig = {
-            collectionInterval: 1000,      // 1 second between GPS readings
-            maxWaypoints: 250000,          // 250K waypoints - ENHANCED
-            batchSize: 100,                // Waypoints per sync batch
-            syncInterval: 30000,           // 30 seconds between sync attempts
-            maxAccuracy: 50,               // Maximum GPS accuracy to accept (meters)
-            minDistance: 0.0001,           // Minimum distance between points (km)
-            maxSpeed: 180,                 // Maximum realistic speed (km/h)
-            enableKalmanFilter: true,      // Enable Kalman filtering
-            enableSpeedSmoothing: true,    // Enable speed smoothing
-            offlineStorage: true,          // Enable offline storage
-            realTimeTracking: true,        // Enable real-time tracking
-            enableCompression: true,       // ENHANCED: Enable data compression
-            autoArchive: true              // ENHANCED: Enable auto archiving
+            collectionInterval: 1000,
+            maxWaypoints: 250000,
+            batchSize: 100,
+            syncInterval: 30000,
+            maxAccuracy: 50,
+            minDistance: 0.0001,
+            maxSpeed: 180,
+            enableKalmanFilter: true,
+            enableSpeedSmoothing: true,
+            offlineStorage: true,
+            realTimeTracking: true,
+            enableCompression: true,
+            autoArchive: true
         };
 
-        // Enhanced Components with comprehensive initialization
+        // Enhanced Components dengan properti yang DITAMBAHKAN
         this.gpsProcessor = new EnhancedGPSProcessor();
         this.speedCalculator = new EnhancedSpeedCalculator();
         this.cleanupManager = new FirebaseCleanupManager(database);
@@ -5549,8 +5130,10 @@ class EnhancedDTGPSLogger {
 
         // === TAMBAHKAN INI ===
         this.realTimeProcessor = new RealTimeGPSProcessor();
-        // =====================
-
+        
+        // === TAMBAHKAN PROPERTI YANG MISSING ===
+        this.processingQueue = [];
+        this.isProcessing = false;
         this.distanceStateKey = 'sagm_realtime_distance_state';
         this.pendingRealTimeState = null;
         this.backgroundPoller = new BackgroundGPSPoller(this);
@@ -5564,11 +5147,11 @@ class EnhancedDTGPSLogger {
         };
         this.strictRealtime = true;
 
-        // Storage & Buffers with enhanced capabilities
+        // Storage & Buffers dengan enhanced capabilities
         this.waypointBuffer = new CircularBuffer(this.waypointConfig.maxWaypoints);
         this.unsyncedWaypoints = new Set();
         
-        // State Management with comprehensive tracking
+        // State Management dengan comprehensive tracking
         this.driverData = null;
         this.watchId = null;
         this.isTracking = false;
@@ -5580,10 +5163,10 @@ class EnhancedDTGPSLogger {
         this.lastPosition = null;
         this.dataPoints = 0;
         this.isOnline = navigator.onLine;
-        this.journeyStatus = 'ready'; // ready, started, paused, ended
+        this.journeyStatus = 'ready';
         this.firebaseRef = null;
         
-        // Real-time Tracking with enhanced metrics
+        // Real-time Tracking dengan enhanced metrics
         this.lastUpdateTime = null;
         this.currentSpeed = 0;
         this.speedHistory = [];
@@ -5592,7 +5175,7 @@ class EnhancedDTGPSLogger {
         
         this.completeHistory = this.loadCompleteHistory();
         
-        // Chat System with enhanced features
+        // Chat System dengan enhanced features
         this.chatRef = null;
         this.chatMessages = [];
         this.unreadCount = 0;
@@ -5600,12 +5183,12 @@ class EnhancedDTGPSLogger {
         this.chatInitialized = false;
         this.lastMessageId = null;
 
-        // Additional Features with comprehensive management
+        // Additional Features dengan comprehensive management
         this.offlineQueue = new OfflineQueueManager();
         this.autoPause = true;
         this.idleDetection = true;
         this.idleStartTime = null;
-        this.idleThreshold = 300000; // 5 minutes in milliseconds
+        this.idleThreshold = 300000;
         
         // Recovery and Health Monitoring
         this.recoveryAttempts = 0;
@@ -5633,6 +5216,8 @@ class EnhancedDTGPSLogger {
         this.init();
     }
 
+    // === METHOD YANG DIPERBAIKI ===
+
     init() {
         try {
             this.setupEventListeners();
@@ -5648,7 +5233,6 @@ class EnhancedDTGPSLogger {
             if (this.strictRealtime) {
                 this.realTimeProcessor.setStrictRealtime(true);
             }
-            // =====================
             
             // Setup resume callbacks
             this.resumeManager.addResumeCallback(() => {
@@ -5686,99 +5270,57 @@ class EnhancedDTGPSLogger {
         }
     }
 
-    restorePersistentDistanceState() {
+    // === METHOD PROCESSING QUEUE YANG DIPERBAIKI ===
+
+    async processQueue() {
+        if (this.isProcessing || this.processingQueue.length === 0) return;
+        
+        this.isProcessing = true;
+        
+        while (this.processingQueue.length > 0) {
+            const { position, options } = this.processingQueue.shift();
+            
+            try {
+                await this.processSinglePosition(position, options);
+            } catch (error) {
+                console.error('Queue processing error:', error);
+            }
+            
+            // Beri jeda kecil untuk bagi CPU time
+            if (this.processingQueue.length > 0) {
+                await new Promise(resolve => setTimeout(resolve, 1));
+            }
+        }
+        
+        this.isProcessing = false;
+    }
+
+    async processSinglePosition(position, options) {
+        const isBackground = options.forceBackground || document.hidden;
+        const isOffline = options.forceOffline || !navigator.onLine;
+
         try {
-            const rawState = localStorage.getItem(this.distanceStateKey);
-            if (!rawState) return;
-
-            const parsedState = JSON.parse(rawState);
-            this.pendingRealTimeState = parsedState;
-
-            if (!parsedState.unit || !this.driverData || (this.driverData && parsedState.unit === this.driverData.unit)) {
-                this.applyPendingRealTimeState();
+            // Process dengan real-time processor
+            const result = await this.realTimeProcessor.processPosition(position);
+            if (result) {
+                this.currentSpeed = result.speed;
+                this.totalDistance = result.totalDistance;
+                this.lastPosition = result.position;
+                
+                // Simpan waypoint
+                this.saveWaypointFromProcessedData(result, position);
+                
+                // Persist state
+                this.persistRealTimeState();
             }
         } catch (error) {
-            console.warn('Failed to restore distance state:', error);
+            console.error('❌ Error in single position processing:', error);
+            this.healthMetrics.errors++;
         }
     }
 
-    applyPendingRealTimeState() {
-        if (!this.pendingRealTimeState) return;
+    // === METHOD REAL-TIME YANG DIPERBAIKI ===
 
-        if (this.pendingRealTimeState.unit && this.driverData && this.pendingRealTimeState.unit !== this.driverData.unit) {
-            return;
-        }
-
-        this.realTimeProcessor.restoreState(this.pendingRealTimeState);
-
-        if (typeof this.pendingRealTimeState.totalDistance === 'number') {
-            this.totalDistance = this.pendingRealTimeState.totalDistance;
-        }
-
-        if (this.pendingRealTimeState.lastPosition) {
-            this.lastPosition = {
-                lat: this.pendingRealTimeState.lastPosition.lat,
-                lng: this.pendingRealTimeState.lastPosition.lng,
-                timestamp: this.pendingRealTimeState.lastPosition.timestamp
-            };
-        }
-
-        this.updateSpeedDistanceDisplay();
-        this.pendingRealTimeState = null;
-        console.log('✅ Real-time distance state restored');
-    }
-
-    persistRealTimeState() {
-        const now = Date.now();
-        if (now - this.lastDistancePersistTime < 3000) {
-            return;
-        }
-        this.lastDistancePersistTime = now;
-
-        try {
-            const realTimeState = this.realTimeProcessor.getState();
-            const stateToSave = {
-                ...realTimeState,
-                totalDistance: this.totalDistance,
-                unit: this.driverData?.unit || realTimeState.unit || null,
-                driver: this.driverData?.name || null,
-                sessionId: this.driverData?.sessionId || null,
-                updatedAt: new Date().toISOString()
-            };
-
-            localStorage.setItem(this.distanceStateKey, JSON.stringify(stateToSave));
-        } catch (error) {
-            console.warn('Failed to persist distance state:', error);
-        }
-    }
-
-    clearPersistentDistanceState() {
-        localStorage.removeItem(this.distanceStateKey);
-        this.pendingRealTimeState = null;
-        this.lastDistancePersistTime = 0;
-    }
-
-    handleBackgroundPoll(position) {
-        this.handleGPSPosition(position, { source: 'background', forceBackground: true });
-    }
-
-    isDuplicatePosition(position) {
-        if (!position || !position.coords) return false;
-        const coordKey = `${position.coords.latitude.toFixed(6)}|${position.coords.longitude.toFixed(6)}`;
-        const now = Date.now();
-
-        if (this.lastProcessedCoordinate === coordKey && (now - this.lastProcessedCoordinateTime) < 2000) {
-            return true;
-        }
-
-        this.lastProcessedCoordinate = coordKey;
-        this.lastProcessedCoordinateTime = now;
-        return false;
-    }
-
-    /**
-     * Setup real-time callbacks untuk Haversine calculation
-     */
     setupRealTimeCallbacks() {
         // Callback untuk update UI
         this.realTimeProcessor.addCallback((data) => {
@@ -5791,9 +5333,6 @@ class EnhancedDTGPSLogger {
         });
     }
 
-    /**
-     * Handle GPS position dengan real-time Haversine processing
-     */
     handleGPSPosition(position, options = {}) {
         if (!position || !position.coords) return;
 
@@ -5807,44 +5346,25 @@ class EnhancedDTGPSLogger {
 
         const isBackground = forceBackground || document.hidden;
         const isOffline = forceOffline || !navigator.onLine;
+        const immediateData = {
+            speed: position.coords.speed ? (position.coords.speed * 3.6) : 0,
+            position: {
+                lat: position.coords.latitude,
+                lng: position.coords.longitude
+            },
+            totalDistance: this.totalDistance
+        };
+        
+        this.updateRealTimeDisplay(immediateData);
 
-        // Process dengan real-time processor (Haversine + Speed calculation)
-        this.realTimeProcessor.processPosition(position)
-            .then(result => {
-                if (result) {
-                    // Update current state dengan hasil Haversine calculation
-                    this.currentSpeed = result.speed;
-                    this.totalDistance = result.totalDistance;
-                    this.lastPosition = result.position;
-                    
-                    // Update UI
-                    this.updateSpeedDistanceDisplay();
-                    
-                    // Simpan waypoint
-                    this.saveWaypointFromProcessedData(result, position);
-
-                    // Persist state untuk pemulihan offline/background
-                    this.persistRealTimeState();
-                }
-            })
-            .catch(error => {
-                console.error('❌ Error in real-time processing:', error);
-                this.healthMetrics.errors++;
-            });
-
-        // Feed data ke background processor untuk menjaga akurasi saat offline/background
-        if (this.gpsProcessor && typeof this.gpsProcessor.processPosition === 'function') {
-            try {
-                this.gpsProcessor.processPosition(position, isBackground, isOffline);
-            } catch (error) {
-                console.warn('Background processor error:', error);
-            }
+        // ✅ ADD TO QUEUE untuk processing detail
+        this.processingQueue.push({ position, options });
+        
+        if (!this.isProcessing) {
+            this.processQueue();
         }
     }
 
-    /**
-     * Update real-time display dengan data Haversine
-     */
     updateRealTimeDisplay(data) {
         // Update speed display
         const speedElement = document.getElementById('currentSpeed');
@@ -5866,9 +5386,6 @@ class EnhancedDTGPSLogger {
         }
     }
 
-    /**
-     * Update speed dan distance display
-     */
     updateSpeedDistanceDisplay() {
         this.updateRealTimeDisplay({
             speed: this.currentSpeed,
@@ -5877,9 +5394,6 @@ class EnhancedDTGPSLogger {
         });
     }
 
-    /**
-     * Log real-time data
-     */
     logRealTimeData(data) {
         if (this.healthMetrics.gpsUpdates % 10 === 0) {
             console.log(`📈 Real-time Metrics #${this.healthMetrics.gpsUpdates}:`, {
@@ -5891,9 +5405,6 @@ class EnhancedDTGPSLogger {
         }
     }
 
-    /**
-     * Save waypoint dari processed data Haversine
-     */
     saveWaypointFromProcessedData(processedData, originalPosition) {
         const waypoint = {
             id: `wp_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
@@ -5914,7 +5425,7 @@ class EnhancedDTGPSLogger {
     /**
      * Get real-time metrics untuk monitoring
      */
-    getRealTimeMetrics() {
+getRealTimeMetrics = () => {
         return {
             calculator: this.realTimeProcessor.getCalculator().getCurrentMetrics(),
             processor: this.realTimeProcessor.getCurrentData()
@@ -5924,7 +5435,7 @@ class EnhancedDTGPSLogger {
     /**
      * Reset real-time tracking
      */
-    resetRealTimeTracking() {
+resetRealTimeTracking = () => {
         this.realTimeProcessor.reset();
         this.currentSpeed = 0;
         this.totalDistance = 0;
@@ -5933,7 +5444,7 @@ class EnhancedDTGPSLogger {
         console.log('🔄 Real-time tracking reset');
     }
 
-    setupEnhancedFeatures() {
+    setupEnhancedFeatures = () => {
         // Monitor storage health
         setInterval(() => {
             this.checkEnhancedStorageHealth();
@@ -5947,7 +5458,7 @@ class EnhancedDTGPSLogger {
         }, 120000);
     }
 
-    async triggerEnhancedSync() {
+triggerEnhancedSync = async () => {
         if (!this.isOnline) return;
         
         try {
@@ -5958,7 +5469,7 @@ class EnhancedDTGPSLogger {
         }
     }
 
-    checkEnhancedStorageHealth() {
+    checkEnhancedStorageHealth = () => {
         const storageStats = this.storageManager.getEnhancedStorageStatistics();
         
         if (storageStats.capacity.health === 'critical') {
@@ -5969,7 +5480,7 @@ class EnhancedDTGPSLogger {
         }
     }
 
-    triggerEmergencyCleanup() {
+    triggerEmergencyCleanup = () => {
         // Perform emergency storage cleanup
         const waypoints = this.storageManager.loadAllWaypoints();
         const cleaned = this.storageManager.performEmergencyCleanup(waypoints);
@@ -5977,7 +5488,7 @@ class EnhancedDTGPSLogger {
         this.addLog('Emergency storage cleanup dilakukan', 'warning');
     }
 
-    getEnhancedSystemStatus() {
+    getEnhancedSystemStatus = () => {
         return {
             storage: this.storageManager.getEnhancedStorageStatistics(),
             retry: this.retryManager.getQueueStats(),
@@ -5994,7 +5505,7 @@ class EnhancedDTGPSLogger {
 
     // === IMPLEMENTASI LENGKAP DARI SEMUA METHOD YANG ADA DI KODE LAMA ===
 
-    setupEventListeners() {
+    setupEventListeners = () => {
         // Login Form
         const loginForm = document.getElementById('loginForm');
         if (loginForm) {
@@ -6041,7 +5552,7 @@ class EnhancedDTGPSLogger {
         window.addEventListener('orientationchange', () => this.handleOrientationChange());
     }
 
-    setupPeriodicTasks() {
+    setupPeriodicTasks = () => {
         // Update time every second
         setInterval(() => this.updateTime(), 1000);
         
@@ -6083,7 +5594,7 @@ class EnhancedDTGPSLogger {
 
     // === IMPLEMENTASI METHOD-METHOD UTAMA DARI KODE LAMA ===
 
-    handleLogin() {
+    handleLogin = () => {
         const driverName = document.getElementById('driverName').value.trim();
         const unitNumber = document.getElementById('unitNumber').value.trim();
         
@@ -6113,7 +5624,7 @@ class EnhancedDTGPSLogger {
         this.updateDriverDisplay();
     }
 
-    startJourney() {
+    startJourney = () => {
         if (!this.driverData) {
             this.addLog('Silakan login terlebih dahulu', 'error');
             return;
@@ -6132,7 +5643,7 @@ class EnhancedDTGPSLogger {
         this.updateJourneyDisplay();
     }
 
-    pauseJourney() {
+    pauseJourney = () => {
         this.journeyStatus = 'paused';
         this.stopRealGPSTracking();
         
@@ -6140,7 +5651,7 @@ class EnhancedDTGPSLogger {
         this.updateJourneyDisplay();
     }
 
-    endJourney() {
+    endJourney = () => {
         this.journeyStatus = 'ended';
         this.stopRealGPSTracking();
         this.stopDataTransmission();
@@ -6152,7 +5663,7 @@ class EnhancedDTGPSLogger {
         this.updateJourneyDisplay();
     }
 
-    startRealGPSTracking() {
+    startRealGPSTracking = () => {
         if (this.watchId) {
             console.warn('GPS tracking sudah berjalan');
             return;
@@ -6175,7 +5686,7 @@ class EnhancedDTGPSLogger {
         console.log('📍 GPS tracking started');
     }
 
-    stopRealGPSTracking() {
+    stopRealGPSTracking = () => {
         if (this.watchId) {
             navigator.geolocation.clearWatch(this.watchId);
             this.watchId = null;
@@ -6185,12 +5696,12 @@ class EnhancedDTGPSLogger {
         console.log('📍 GPS tracking stopped');
     }
 
-    saveWaypoint(waypoint) {
+saveWaypoint = (waypoint) => {
         this.storageManager.saveWaypoint(waypoint);
         this.healthMetrics.waypointSaves++;
     }
 
-    startDataTransmission() {
+    startDataTransmission = () => {
         // Start sending real-time data to Firebase
         this.sendInterval = setInterval(() => {
             if (this.isOnline && this.lastPosition) {
@@ -6208,7 +5719,7 @@ class EnhancedDTGPSLogger {
         console.log('📡 Data transmission started');
     }
 
-    stopDataTransmission() {
+    stopDataTransmission = () => {
         if (this.sendInterval) {
             clearInterval(this.sendInterval);
             this.sendInterval = null;
@@ -6220,7 +5731,7 @@ class EnhancedDTGPSLogger {
         console.log('📡 Data transmission stopped');
     }
 
-    async sendRealTimeData() {
+sendRealTimeData = async () => {
         if (!this.firebaseRef || !this.lastPosition) return;
 
         try {
