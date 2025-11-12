@@ -26,8 +26,6 @@ class HaversineDistanceSpeedCalculator {
         this.currentSpeed = 0;
         this.lastPosition = null;
         this.lastCalculationTime = null;
-        this.processingQueue = [];
-        this.isProcessing = false;
         this.lastFirebaseSend = 0;
         this.firebaseDebounceDelay = 1000;
         
@@ -5106,16 +5104,14 @@ class EnhancedDTGPSLogger {
         this.distanceCalculator= new HaversineDistanceSpeedCalculator();
         
         // === TAMBAHKAN PROPERTI YANG MISSING ===
-        this.processingQueue = [];
-        this.isProcessing = false;
+        
         this.distanceStateKey = 'sagm_realtime_distance_state';
-        this.pendingRealTimeState = null;
+
         this.backgroundPoller = new BackgroundGPSPoller(this, { 
             pollDelay: 1000,
             enableHighAccuracy: true
         });
-        this.lastProcessedCoordinate = null;
-        this.lastProcessedCoordinateTime = 0;
+        
         this.lastDistancePersistTime = 0;
         this.accuracyTuning = {
             idleSnapKmh: 0,
@@ -5248,49 +5244,9 @@ class EnhancedDTGPSLogger {
         }
     }
 
-    processQueue() {
-        if (this.isProcessing || this.processingQueue.length === 0) return;
-
-        this.isProcessing = true;
-
-        while (this.processingQueue.length > 0) {
-            const { position, options } = this.processingQueue.shift();
-
-            try {
-                this.processSinglePosition(position, options);
-            } catch (error) {
-                console.error('Queue processing error:', error);
-            }
-        }
-
-        this.isProcessing = false;
-    }
-
-    processSinglePosition(position, options) {
-        const isBackground = options.forceBackground || document.hidden;
-        const isOffline = options.forceOffline || !navigator.onLine;
-
-        try {
-            const result = this.realTimeProcessor.processPosition(position);
-            if (result) {
-                this.currentSpeed = result.speed;
-                this.totalDistance = result.totalDistance;
-                this.lastPosition = result.position;
-
-                this.saveWaypointFromProcessedData(result, position);
-
-                this.persistRealTimeState();
-            }
-        } catch (error) {
-            console.error('❌ Error in single position processing:', error);
-            this.healthMetrics.errors++;
-        }
-    }
-
-
     
-
-    // === METHOD REAL-TIME YANG DIPERBAIKI ===
+    
+// === METHOD REAL-TIME YANG DIPERBAIKI ===
 
     setupRealTimeCallbacks() {
         // Callback untuk update UI
@@ -5326,14 +5282,6 @@ class EnhancedDTGPSLogger {
             totalDistance: this.totalDistance
         };
         
-        this.updateRealTimeDisplay(immediateData);
-
-        // ✅ ADD TO QUEUE untuk processing detail
-        this.processingQueue.push({ position, options });
-        
-        if (!this.isProcessing) {
-            this.processQueue();
-        }
     }
 
     updateRealTimeDisplay(data) {
