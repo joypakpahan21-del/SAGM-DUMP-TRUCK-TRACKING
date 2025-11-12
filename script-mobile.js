@@ -226,7 +226,6 @@ class RealTimeGPSProcessor {
         this.distanceCalculator = new HaversineDistanceSpeedCalculator();
         this.updateInterval = 1000; // 1 detik (tidak dipakai untuk throttle)
         this.isProcessing = false;
-        this.processingDelay = 0; // default tanpa delay
         this.strictRealtime = true;
         this.tuning = {
             idleSnapKmh: 0,
@@ -247,9 +246,34 @@ class RealTimeGPSProcessor {
         this.callbacks = [];
     }
     
-    /**
-     * Set tuning parameters for idle snap and anti-jitter
-     */
+    processPosition(gpsPosition) {
+        if (this.isProcessing) {
+            return null;
+        }
+        this.isProcessing = true;
+        try {
+            const result = this.distanceCalculator.updateWithGPSPosition(gpsPosition);
+            const adjustedDistance = result.distance;
+            const adjustedSpeed = result.speed;
+            this.currentData = {
+                position: {
+                    lat: gpsPosition.coords.latitude,
+                    lng: gpsPosition.coords.longitude
+                },
+                distance: adjustedDistance,
+                speed: adjustedSpeed,
+                totalDistance: result.totalDistance,
+                timestamp: result.timestamp
+            };
+            this.notifyCallbacks(this.currentData);
+            return this.currentData;
+        } catch (error) {
+            console.error('❌ Error processing GPS position:', error);
+            return null;
+        } finally {
+            this.isProcessing = false;
+        }
+    }
     setTuning(tuning) {
         this.tuning = { ...this.tuning, ...(tuning || {}) };
     }
@@ -267,94 +291,7 @@ class RealTimeGPSProcessor {
         }
     }
 
-    /**
-     * Process GPS position setiap 1 detik
-     */
-    async processPosition(gpsPosition) {
-        if (this.isProcessing) {
-            return null;
-        }
-
-        this.isProcessing = true;
-
-        try {
-            const result = this.distanceCalculator.updateWithGPSPosition(gpsPosition);
-            const adjustedDistance = result.distance;
-            const adjustedSpeed = result.speed;
-            
-            if (!this.strictRealtime) {
-                // Idle snap: perlakukan kecepatan sangat kecil sebagai diam
-                if (adjustedSpeed < (this.tuning.idleSnapKmh || 0)) {
-                    adjustedDistance = 0;
-                    adjustedSpeed = 0;
-                }
-
-                // Anti-zigzag ringan: jika akurasi buruk dan pergeseran kecil, abaikan
-                const accuracy = (gpsPosition.coords && typeof gpsPosition.coords.accuracy === 'number')
-                    ? gpsPosition.coords.accuracy
-                    : 0;
-                const minMove = (this.tuning.minMoveMeters || 0);
-                if (accuracy > (this.tuning.antiZigzagAccuracy || 0) && (adjustedDistance * 1000) < minMove) {
-                    adjustedDistance = 0;
-                }
-            }
-
-            // Recompute total distance with adjustments
-            const newTotal = prevTotal + adjustedDistance;
-            this.distanceCalculator.totalDistance = newTotal;
-            
-            // Update current data
-            this.currentData = {
-                position: {
-                    lat: gpsPosition.coords.latitude,
-                    lng: gpsPosition.coords.longitude
-                },
-                distance: adjustedDistance,
-                speed: adjustedSpeed,
-                totalDistance: newTotal,
-                timestamp: result.timestamp
-            };
-
-            // Notify callbacks
-            this.notifyCallbacks(this.currentData);
-
-            return this.currentData;
-
-        } catch (error) {
-            console.error('❌ Error processing GPS position:', error);
-            return null;
-        } finally {
-            this.isProcessing = false;
-        }
-    }
-
-    /**
-     * Delay function
-     */
-    delay(ms) {
-        return new Promise(resolve => setTimeout(resolve, ms));
-    }
-
-    /**
-     * Add callback untuk real-time updates
-     */
-    addCallback(callback) {
-        this.callbacks.push(callback);
-    }
-
-    /**
-     * Notify semua callbacks
-     */
-    notifyCallbacks(data) {
-        this.callbacks.forEach(callback => {
-            try {
-                callback(data);
-            } catch (error) {
-                console.error('Error in processor callback:', error);
-            }
-        });
-    }
-
+    
     /**
      * Get current data
      */
@@ -415,6 +352,8 @@ class RealTimeGPSProcessor {
         this.distanceCalculator.restoreState(state);
     }
 }
+
+
 
 // ===== BACKGROUND GPS POLLER =====
 class BackgroundGPSPoller {
@@ -5309,47 +5248,37 @@ class EnhancedDTGPSLogger {
         }
     }
 
-    // === METHOD PROCESSING QUEUE YANG DIPERBAIKI ===
-
-    async processQueue() {
+    processQueue() {
         if (this.isProcessing || this.processingQueue.length === 0) return;
-        
+
         this.isProcessing = true;
-        
+
         while (this.processingQueue.length > 0) {
             const { position, options } = this.processingQueue.shift();
-            
+
             try {
-                await this.processSinglePosition(position, options);
+                this.processSinglePosition(position, options);
             } catch (error) {
                 console.error('Queue processing error:', error);
             }
-            
-            // Beri jeda kecil untuk bagi CPU time
-            if (this.processingQueue.length > 0) {
-                await new Promise(resolve => setTimeout(resolve, 1));
-            }
         }
-        
+
         this.isProcessing = false;
     }
 
-    async processSinglePosition(position, options) {
+    processSinglePosition(position, options) {
         const isBackground = options.forceBackground || document.hidden;
         const isOffline = options.forceOffline || !navigator.onLine;
 
         try {
-            // Process dengan real-time processor
-            const result = await this.realTimeProcessor.processPosition(position);
+            const result = this.realTimeProcessor.processPosition(position);
             if (result) {
                 this.currentSpeed = result.speed;
                 this.totalDistance = result.totalDistance;
                 this.lastPosition = result.position;
-                
-                // Simpan waypoint
+
                 this.saveWaypointFromProcessedData(result, position);
-                
-                // Persist state
+
                 this.persistRealTimeState();
             }
         } catch (error) {
@@ -5357,6 +5286,9 @@ class EnhancedDTGPSLogger {
             this.healthMetrics.errors++;
         }
     }
+
+
+    
 
     // === METHOD REAL-TIME YANG DIPERBAIKI ===
 
