@@ -18,7 +18,9 @@ try {
 }
 const database = firebase.database();
 
-class IndependentStopwatch {
+(function() {
+
+    class IndependentStopwatch {
     constructor() {
         this.startTime = null;
         this.pausedTime = 0;
@@ -480,7 +482,7 @@ class BackgroundGPSPoller {
     }
 }
 
-    setActive(active) = () => {
+    setActive = (active) => {
         this.isActive = active;
         if (!active) {
             this.stop();
@@ -6529,3 +6531,6 @@ window.addEventListener('beforeunload', function(event) {
 });
 
 console.log('🎉 script-mobile.js loaded successfully with ENHANCED UNLIMITED features, LOGOUT MANAGEMENT and HAVERSINE CALCULATION!');
+
+})();
+
