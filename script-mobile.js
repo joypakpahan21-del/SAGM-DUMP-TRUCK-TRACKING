@@ -480,7 +480,7 @@ class BackgroundGPSPoller {
     }
 }
 
-    setActive(active) {
+    setActive(active) = () => {
         this.isActive = active;
         if (!active) {
             this.stop();
@@ -492,12 +492,12 @@ class BackgroundGPSPoller {
         }
     }
 
-    shouldPoll() {
+    shouldPoll() = () => {
         if (!this.isActive) return false;
         return document.hidden || !navigator.onLine;
     }
 
-    handleVisibilityChange() {
+    handleVisibilityChange() = () => {
         const isBackground = document.hidden;
         if (isBackground) {
             console.log('⚡ App masuk BACKGROUND - switching to 1-second polling');
@@ -517,7 +517,7 @@ class BackgroundGPSPoller {
         }
     }
 
-    handleNetworkChange() {
+    handleNetworkChange() = () => {
         if (this.shouldPoll()) {
             this.start();
         } else if (navigator.onLine && !document.hidden) {
@@ -525,13 +525,13 @@ class BackgroundGPSPoller {
         }
     }
 
-    start() {
+    start() = () => {
         if (this.pollInterval || !this.isActive) return;
         this.poll();
         this.pollInterval = setInterval(() => this.poll(), this.pollDelay);
     }
 
-    poll() {
+    poll() = () => {
         if (!this.isActive || !navigator.geolocation) return;
 
         navigator.geolocation.getCurrentPosition(
@@ -545,14 +545,14 @@ class BackgroundGPSPoller {
         );
     }
 
-    stop() {
+    stop() = () => {
         if (this.pollInterval) {
             clearInterval(this.pollInterval);
             this.pollInterval = null;
         }
     }
 
-    destroy() {
+    destroy() = () => {
         this.stop();
         document.removeEventListener('visibilitychange', this.handleVisibilityChange);
         window.removeEventListener('online', this.handleNetworkChange);
