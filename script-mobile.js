@@ -18,6 +18,82 @@ try {
 }
 const database = firebase.database();
 
+class IndependentStopwatch {
+    constructor() {
+        this.startTime = null;
+        this.pausedTime = 0;
+        this.isRunning = false;
+        this.lastUpdate = null;
+    }
+
+    start() {
+        if (this.isRunning) return;
+        
+        this.startTime = Date.now();
+        this.isRunning = true;
+        this.lastUpdate = Date.now();
+        console.log('⏱️ Independent Stopwatch STARTED');
+    }
+
+    pause() {
+        if (!this.isRunning) return;
+        
+        this.updatePausedTime();
+        this.isRunning = false;
+        console.log('⏱️ Independent Stopwatch PAUSED');
+    }
+
+    resume() {
+        if (this.isRunning) return;
+        
+        this.startTime = Date.now() - this.pausedTime;
+        this.isRunning = true;
+        this.lastUpdate = Date.now();
+        console.log('⏱️ Independent Stopwatch RESUMED');
+    }
+
+    stop() {
+        this.updatePausedTime();
+        this.isRunning = false;
+        console.log('⏱️ Independent Stopwatch STOPPED');
+    }
+
+    reset() {
+        this.startTime = null;
+        this.pausedTime = 0;
+        this.isRunning = false;
+        this.lastUpdate = null;
+        console.log('⏱️ Independent Stopwatch RESET');
+    }
+
+    updatePausedTime() {
+        if (this.isRunning && this.startTime) {
+            this.pausedTime = Date.now() - this.startTime;
+        }
+    }
+
+    getElapsedTime() {
+        if (!this.isRunning || !this.startTime) {
+            return this.pausedTime;
+        }
+        return Date.now() - this.startTime;
+    }
+
+    getCurrentTimestamp() {
+        // ✅ TIMESTAMP YANG TIDAK PERNAH STUCK OFFLINE
+        return this.getElapsedTime();
+    }
+
+    getFormattedTime() {
+        const totalSeconds = Math.floor(this.getElapsedTime() / 1000);
+        const hours = Math.floor(totalSeconds / 3600);
+        const minutes = Math.floor((totalSeconds % 3600) / 60);
+        const seconds = totalSeconds % 60;
+        
+        return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+    }
+}
+
 // ===== HAVERSINE DISTANCE & REAL-TIME SPEED CALCULATOR =====
 class HaversineDistanceSpeedCalculator {
     constructor() {
@@ -31,6 +107,8 @@ class HaversineDistanceSpeedCalculator {
         this.EARTH_RADIUS_KM = 6371;
         this.MIN_TIME_DIFF = 0.1; 
         this.getTimestampFn = null;
+        this.stopwatch = new IndependentStopwatch();
+        this.setupStopwatchSystem();
     }
 
     setTimestampGetter(getTimestampFn) {
@@ -42,7 +120,16 @@ class HaversineDistanceSpeedCalculator {
         }
     }
 
+    setupStopwatchSystem() {
+        this.getSessionTimestamp = () => {
+            return this.stopwatch.getCurrentTimestamp();
+        };
+        if (this.realTimeProcessor) {
+            this.realTimeProcessor.setStopwatch(this.getSessionTimestamp);
+        }
 
+        console.log('⏱️ Independent Stopwatch system initialized');
+    }
     calculateHaversineDistance(lat1, lon1, lat2, lon2) {
         // Validasi input
         if (!this.isValidCoordinate(lat1, lon1) || !this.isValidCoordinate(lat2, lon2)) {
@@ -74,7 +161,7 @@ class HaversineDistanceSpeedCalculator {
             return { distance: 0, speed: 0, totalDistance: this.totalDistance };
         }
 
-        const now = this.getTimestampFn ? this.getTimestampFn() : Date.now();
+        const now = this.getTimestampFn ? this.getTimestampFn() : 0;
         const currentPoint = {
             lat: currentPosition.lat,
             lng: currentPosition.lng,
@@ -83,7 +170,7 @@ class HaversineDistanceSpeedCalculator {
 
         let distance = 0;
         let speed = 0;
-        let timeDiff = 0;
+        
 
         // Jika ada posisi sebelumnya, hitung jarak dan kecepatan
         if (this.lastPosition) {
@@ -92,37 +179,28 @@ class HaversineDistanceSpeedCalculator {
                 this.lastPosition.lat, this.lastPosition.lng,
                 currentPoint.lat, currentPoint.lng
             );
+            const timeDiffMs = currentPoint.timestamp - this.lastPosition.timestamp;
+            const timeDiffHours = timeDiffMs / 1000 / 3600;
 
-            // 2. HITUNG SELISIH WAKTU (dalam jam)
-            timeDiff = (currentPoint.timestamp - this.lastPosition.timestamp) / 1000 / 3600;
-            
-            // 3. HITUNG KECEPATAN (km/h) = jarak (km) / waktu (jam)
-            if (timeDiff > this.MIN_TIME_DIFF) {
-                speed = distance / timeDiff;
+            if (timeDiffHours > 0.0000278) { // ~0.1 detik
+                speed = distance / timeDiffHours;
                 speed = this.validateSpeed(speed);
             }
 
-            // 4. UPDATE TOTAL JARAK
             this.totalDistance += distance;
         }
 
-        // Update posisi terakhir
         this.lastPosition = currentPoint;
-        this.lastCalculationTime = now;
         this.currentSpeed = speed;
 
         return {
             distance: distance,
             speed: speed,
             totalDistance: this.totalDistance,
-            timeDiff: timeDiff,
             timestamp: now
         };
     }
-
-    /**
-     * Validasi koordinat
-     */
+    
     isValidCoordinate(lat, lng) {
         if (lat === null || lng === null || lat === undefined || lng === undefined) {
             return false;
@@ -5473,6 +5551,12 @@ triggerEnhancedSync = async () => {
         // Window event listeners
         window.addEventListener('resize', () => this.handleResize());
         window.addEventListener('orientationchange', () => this.handleOrientationChange());
+        window.addEventListener('online', () => {
+            console.log('🌐 Online - stopwatch tetap berjalan');
+        });
+        window.addEventListener('offline', () => {
+            console.log('📴 Offline - stopwatch tetap berjalan');
+        });
     }
 
     setupPeriodicTasks = () => {
@@ -5532,6 +5616,7 @@ triggerEnhancedSync = async () => {
             sessionId: `session_${Date.now()}`,
             loginTime: new Date().toISOString()
         };
+        this.stopwatch.start();
 
         this.applyPendingRealTimeState();
 
@@ -5848,10 +5933,9 @@ sendRealTimeData = async () => {
     }
 
     updateTime() {
-        const now = new Date();
         const timeElement = document.getElementById('currentTime');
-        if (timeElement) {
-            timeElement.textContent = now.toLocaleTimeString('id-ID');
+        if (timeElement && this.driverData) {
+            timeElement.textContent = this.stopwatch.getFormattedTime();
         }
     }
 
@@ -6224,6 +6308,8 @@ sendRealTimeData = async () => {
         this.totalDistance = 0;
         this.dataPoints = 0;
         this.lastPosition = null;
+        this.stopwatch.stop();
+        this.stopwatch.reset();
         
         // Show login screen
         document.getElementById('loginScreen').classList.remove('hidden');
