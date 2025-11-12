@@ -28,15 +28,21 @@ class HaversineDistanceSpeedCalculator {
         this.lastCalculationTime = null;
         this.lastFirebaseSend = 0;
         this.firebaseDebounceDelay = 1000;
-        
-        // Constants
         this.EARTH_RADIUS_KM = 6371;
-        this.MIN_TIME_DIFF = 0.1; // minimum 0.1 detik untuk validasi
+        this.MIN_TIME_DIFF = 0.1; 
+        this.getTimestampFn = null;
     }
 
-    /**
-     * HAVERSINE FORMULA - Menghitung jarak antara 2 titik koordinat
-     */
+    setTimestampGetter(getTimestampFn) {
+        if (typeof getTimestampFn === 'function') {
+            this.getTimestampFn = getTimestampFn;
+            console.log('⏱️ Stopwatch di-set ke Haversine Calculator');
+        } else {
+            console.warn('❌ getTimestampFn bukan function:', getTimestampFn);
+        }
+    }
+
+
     calculateHaversineDistance(lat1, lon1, lat2, lon2) {
         // Validasi input
         if (!this.isValidCoordinate(lat1, lon1) || !this.isValidCoordinate(lat2, lon2)) {
@@ -62,15 +68,13 @@ class HaversineDistanceSpeedCalculator {
         return distance;
     }
 
-    /**
-     * REAL-TIME SPEED CALCULATION = jarak / selisih waktu
-     */
+
     calculateDistanceAndSpeed(currentPosition) {
         if (!currentPosition || !currentPosition.lat || !currentPosition.lng) {
             return { distance: 0, speed: 0, totalDistance: this.totalDistance };
         }
 
-        const now = new Date();
+        const now = this.getTimestampFn ? this.getTimestampFn() : Date.now();
         const currentPoint = {
             lat: currentPosition.lat,
             lng: currentPosition.lng,
@@ -161,7 +165,7 @@ class HaversineDistanceSpeedCalculator {
         const processedPosition = {
             lat: gpsPosition.coords.latitude,
             lng: gpsPosition.coords.longitude,
-            timestamp: new Date(gpsPosition.timestamp || Date.now())
+            timestamp: this.getTimestampFn ? this.getTimestampFn() : Date.now()
         };
 
         return this.calculateDistanceAndSpeed(processedPosition);
