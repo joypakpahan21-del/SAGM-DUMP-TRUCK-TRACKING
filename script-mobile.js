@@ -26,6 +26,7 @@ const database = firebase.database();
         this.pausedTime = 0;
         this.isRunning = false;
         this.lastUpdate = null;
+        
     }
 
     start() {
@@ -96,6 +97,37 @@ const database = firebase.database();
     }
 }
 
+
+setupSpeedStopwatch = () => {
+    if (this.distanceCalculator) {
+        this.distanceCalculator.setTimestampGetter(() => {
+            return this.stopwatch.getCurrentTimestamp();
+        });
+    }
+    if (this.realTimeProcessor && this.realTimeProcessor.distanceCalculator) {
+        this.realTimeProcessor.distanceCalculator.setTimestampGetter(() => {
+            return this.stopwatch.getCurrentTimestamp();
+        });
+    }
+    
+    console.log('✅ Speed stopwatch setup completed');
+}
+
+startJourney = () => {
+    this.journeyStatus = 'started';
+    this.sessionStartTime = new Date();
+    
+    // ✅ START STOPWATCH UNTUK KECEPATAN
+    if (this.stopwatch) {
+        this.stopwatch.start();
+    }
+    
+    this.startRealGPSTracking();
+    this.startDataTransmission();
+    this.addLog('Perjalanan dimulai', 'success');
+    this.updateJourneyDisplay();
+}
+
 // ===== HAVERSINE DISTANCE & REAL-TIME SPEED CALCULATOR =====
 class HaversineDistanceSpeedCalculator {
     constructor() {
@@ -156,7 +188,6 @@ class HaversineDistanceSpeedCalculator {
 
         return distance;
     }
-
 
     calculateDistanceAndSpeed(currentPosition) {
         if (!currentPosition || !currentPosition.lat || !currentPosition.lng) {
@@ -327,7 +358,20 @@ class RealTimeGPSProcessor {
 
         this.callbacks = [];
     }
-    
+    setStopwatch(getTimestampFn) {
+        if (this.distanceCalculator && typeof getTimestampFn === 'function') {
+            this.distanceCalculator.setTimestampGetter(getTimestampFn);
+            console.log('✅ Stopwatch di-set ke RealTimeGPSProcessor');
+        } else {
+            console.warn('❌ Invalid stopwatch setup:', {
+                hasCalculator: !!this.distanceCalculator,
+                isFunction: typeof getTimestampFn === 'function'
+            });
+        }
+    }
+    getCalculator() {
+        return this.distanceCalculator;
+    }    
     processPosition(gpsPosition) {
         if (this.isProcessing) {
             return null;
@@ -5177,25 +5221,17 @@ class EnhancedDTGPSLogger {
         this.cleanupManager = new FirebaseCleanupManager(database);
         this.kalmanFilter = new GPSKalmanFilter();
         this.resumeManager = new ResumeManager(this);
-        
-        // NEW ENHANCED COMPONENTS
         this.retryManager = new EnhancedRetryManager();
         this.storageManager = new EnhancedStorageManager();
         this.syncManager = new IntelligentSyncManager();
-
-        // === TAMBAHKAN INI ===
         this.realTimeProcessor = new RealTimeGPSProcessor();
         this.distanceCalculator= new HaversineDistanceSpeedCalculator();
-        
-        // === TAMBAHKAN PROPERTI YANG MISSING ===
-        
         this.distanceStateKey = 'sagm_realtime_distance_state';
-
         this.backgroundPoller = new BackgroundGPSPoller(this, { 
             pollDelay: 1000,
             enableHighAccuracy: true
         });
-        
+    
         this.lastDistancePersistTime = 0;
         this.accuracyTuning = {
             idleSnapKmh: 0,
@@ -5203,12 +5239,8 @@ class EnhancedDTGPSLogger {
             antiZigzagAccuracy: 0
         };
         this.strictRealtime = true;
-
-        // Storage & Buffers dengan enhanced capabilities
         this.waypointBuffer = new CircularBuffer(this.waypointConfig.maxWaypoints);
         this.unsyncedWaypoints = new Set();
-        
-        // State Management dengan comprehensive tracking
         this.driverData = null;
         this.watchId = null;
         this.isTracking = false;
@@ -5222,8 +5254,6 @@ class EnhancedDTGPSLogger {
         this.isOnline = navigator.onLine;
         this.journeyStatus = 'ready';
         this.firebaseRef = null;
-        
-        // Real-time Tracking dengan enhanced metrics
         this.lastUpdateTime = null;
         this.currentSpeed = 0;
         this.speedHistory = [];
@@ -5267,9 +5297,12 @@ class EnhancedDTGPSLogger {
             firebaseSendTime: 0,
             totalUptime: 0
         };
+        this.stopwatch = new IndependentStopwatch(); 
+        this.setupAllStopwatches();
 
         this.restorePersistentDistanceState();
         console.log('🚀 ENHANCED GPS Logger - All Systems Initialized');
+        console.log('🎯 All stopwatch systems initialized');
         this.init();
     }
 
@@ -5889,6 +5922,132 @@ sendRealTimeData = async () => {
         };
 
         await batchRef.set(batchData);
+    }
+    
+    setupAllStopwatches() {
+        const stopwatchGetter = () => {
+            return this.stopwatch.getCurrentTimestamp();
+        };
+
+        if (this.distanceCalculator) {
+            this.distanceCalculator.setTimestampGetter(stopwatchGetter);
+            console.log('✅ Stopwatch di-set ke DistanceCalculator');
+        }
+
+        if (this.realTimeProcessor) {
+            this.realTimeProcessor.setStopwatch(stopwatchGetter);
+            console.log('✅ Stopwatch di-set ke RealTimeGPSProcessor');
+        }
+
+        if (this.backgroundProcessor) {
+            this.backgroundProcessor.setStopwatch(stopwatchGetter);
+            console.log('✅ Stopwatch di-set ke BackgroundProcessor');
+        }
+    }
+
+    startJourney() {
+        if (!this.driverData) {
+            this.addLog('Silakan login terlebih dahulu', 'error');
+            return;
+        }
+        this.journeyStatus = 'started';
+        this.sessionStartTime = new Date();
+        this.totalDistance = 0;
+        this.dataPoints = 0;
+        if (this.stopwatch) {
+            this.stopwatch.start();
+            console.log('⏱️ Stopwatch started for speed calculation');
+        }
+
+        this.resetRealTimeTracking();
+        this.startRealGPSTracking();
+        this.startDataTransmission();
+
+        this.addLog('Perjalanan dimulai - stopwatch aktif', 'success');
+        this.updateJourneyDisplay();
+    }
+
+    pauseJourney() {
+        this.journeyStatus = 'paused';
+        
+        // ✅ PAUSE STOPWATCH
+        if (this.stopwatch) {
+            this.stopwatch.pause();
+            console.log('⏱️ Stopwatch paused');
+        }
+        
+        this.stopRealGPSTracking();
+        this.addLog('Perjalanan dijeda', 'warning');
+        this.updateJourneyDisplay();
+    }
+
+    endJourney() {
+        this.journeyStatus = 'ended';
+        if (this.stopwatch) {
+            this.stopwatch.stop();
+            console.log('⏱️ Stopwatch stopped');
+        }
+        this.stopRealGPSTracking();
+        this.stopDataTransmission();
+        this.cleanupManager.scheduleCleanup(this.driverData.unit, this.driverData.sessionId, 'journey_ended');
+
+        this.addLog('Perjalanan selesai', 'success');
+        this.updateJourneyDisplay();
+    }
+
+    resetForNewJourney() {
+        if (this.stopwatch) {
+            this.stopwatch.reset();
+            console.log('🔄 Stopwatch reset for new journey');
+        }
+        
+        this.sessionStartTime = new Date();
+        this.totalDistance = 0;
+        this.dataPoints = 0;
+        
+        // Reset processors
+        if (this.realTimeProcessor) {
+            this.realTimeProcessor.reset();
+        }
+        if (this.distanceCalculator) {
+            this.distanceCalculator.reset();
+        }
+    }
+    debugStopwatchSystem() {
+        console.group('🔍 Stopwatch System Debug');
+        console.log('Main Stopwatch:', {
+            exists: !!this.stopwatch,
+            isRunning: this.stopwatch?.isRunning,
+            elapsed: this.stopwatch?.getElapsedTime(),
+            formatted: this.stopwatch?.getFormattedTime()
+        });
+        console.log('Distance Calculator:', {
+            exists: !!this.distanceCalculator,
+            hasGetter: !!this.distanceCalculator?.getTimestampFn,
+            timestamp: this.distanceCalculator?.getTimestampFn?.()
+        });
+        console.log('RealTime Processor:', {
+            exists: !!this.realTimeProcessor,
+            calculatorExists: !!this.realTimeProcessor?.distanceCalculator,
+            calculatorHasGetter: !!this.realTimeProcessor?.distanceCalculator?.getTimestampFn
+        });
+        console.groupEnd();
+
+        return {
+            mainStopwatch: this.stopwatch ? {
+                isRunning: this.stopwatch.isRunning,
+                elapsed: this.stopwatch.getElapsedTime(),
+                formatted: this.stopwatch.getFormattedTime()
+            } : null,
+            distanceCalculator: this.distanceCalculator ? {
+                hasGetter: !!this.distanceCalculator.getTimestampFn,
+                timestamp: this.distanceCalculator.getTimestampFn?.()
+            } : null,
+            realTimeProcessor: this.realTimeProcessor ? {
+                hasCalculator: !!this.realTimeProcessor.distanceCalculator,
+                calculatorHasGetter: !!this.realTimeProcessor.distanceCalculator?.getTimestampFn
+            } : null
+        };
     }
 
     // === IMPLEMENTASI METHOD-METHOD TAMBAHAN ===
