@@ -227,10 +227,11 @@ class RealTimeGPSProcessor {
         this.updateInterval = 1000; // 1 detik (tidak dipakai untuk throttle)
         this.isProcessing = false;
         this.processingDelay = 0; // default tanpa delay
+        this.strictRealtime = true;
         this.tuning = {
-            idleSnapKmh: 3,
-            minMoveMeters: 8,
-            antiZigzagAccuracy: 25
+            idleSnapKmh: 0,
+            minMoveMeters: 0,
+            antiZigzagAccuracy: 0
         };
         this.strictRealtime = false;
         
@@ -245,7 +246,7 @@ class RealTimeGPSProcessor {
 
         this.callbacks = [];
     }
-
+    
     /**
      * Set tuning parameters for idle snap and anti-jitter
      */
@@ -271,24 +272,16 @@ class RealTimeGPSProcessor {
      */
     async processPosition(gpsPosition) {
         if (this.isProcessing) {
-            console.log('⏳ Skip processing - already busy');
             return null;
         }
 
         this.isProcessing = true;
 
         try {
-            // Tambahkan delay kecil 3ms
-            if (this.processingDelay > 0) {
-                await this.delay(this.processingDelay);
-            }
-
-            // Hitung jarak dan kecepatan menggunakan Haversine
-            const prevTotal = this.distanceCalculator.totalDistance || 0;
             const result = this.distanceCalculator.updateWithGPSPosition(gpsPosition);
-            let adjustedDistance = result.distance;
-            let adjustedSpeed = result.speed;
-
+            const adjustedDistance = result.distance;
+            const adjustedSpeed = result.speed;
+            
             if (!this.strictRealtime) {
                 // Idle snap: perlakukan kecepatan sangat kecil sebagai diam
                 if (adjustedSpeed < (this.tuning.idleSnapKmh || 0)) {
@@ -429,7 +422,7 @@ class BackgroundGPSPoller {
         this.logger = logger;
         this.pollInterval = null;
         this.isActive = false;
-        this.pollDelay = options.pollDelay || 15000;
+        this.pollDelay = options.pollDelay || 1000;
         this.enableHighAccuracy = options.enableHighAccuracy !== false;
 
         this.handleVisibilityChange = this.handleVisibilityChange.bind(this);
@@ -439,6 +432,34 @@ class BackgroundGPSPoller {
         window.addEventListener('online', this.handleNetworkChange);
         window.addEventListener('offline', this.handleNetworkChange);
     }
+    start() {
+        if (this.pollInterval || !this.isActive) return;
+        
+        // ⚡ POLL SEGERA dan setiap 1 detik
+        this.poll();
+        this.pollInterval = setInterval(() => this.poll(), this.pollDelay);
+        
+        console.log('⚡ Background polling started: 1 SECOND interval');
+    }
+
+    poll() {
+        if (!this.isActive || !navigator.geolocation) return;
+
+        navigator.geolocation.getCurrentPosition(
+            (position) => {
+                if (this.logger && this.logger.handleBackgroundPoll) {
+                    this.logger.handleBackgroundPoll(position);
+                }
+            },
+            (error) => console.warn('Background GPS poll failed:', error),
+            {
+                enableHighAccuracy: this.enableHighAccuracy,
+                maximumAge: 0,        // ⚡ Data selalu fresh
+                timeout: 5000         // ⚡ Timeout cepat
+            }
+        );
+    }
+}
 
     setActive(active) {
         this.isActive = active;
@@ -458,10 +479,22 @@ class BackgroundGPSPoller {
     }
 
     handleVisibilityChange() {
-        if (this.shouldPoll()) {
-            this.start();
+        const isBackground = document.hidden;
+        if (isBackground) {
+            console.log('⚡ App masuk BACKGROUND - switching to 1-second polling');
+            if (this.watchId) {
+                navigator.geolocation.clearWatch(this.watchId);
+                this.watchId = null;
+            }
+            this.backgroundPoller.setActive(true);
         } else {
-            this.stop();
+            console.log('⚡ App kembali FOREGROUND - switching to watchPosition');
+            
+            // ⚡ STOP background polling
+            this.backgroundPoller.setActive(false);
+            
+            // ⚡ START foreground watchPosition
+            this.startRealGPSTracking();
         }
     }
 
@@ -506,7 +539,8 @@ class BackgroundGPSPoller {
         window.removeEventListener('online', this.handleNetworkChange);
         window.removeEventListener('offline', this.handleNetworkChange);
     }
-}
+
+
 
 // ===== ENHANCED KALMAN FILTER FOR GPS SMOOTHING =====
 class EnhancedKalmanFilter {
@@ -5130,20 +5164,24 @@ class EnhancedDTGPSLogger {
 
         // === TAMBAHKAN INI ===
         this.realTimeProcessor = new RealTimeGPSProcessor();
+        this.distanceCalculator= new HaversineDistanceSpeedCalculator();
         
         // === TAMBAHKAN PROPERTI YANG MISSING ===
         this.processingQueue = [];
         this.isProcessing = false;
         this.distanceStateKey = 'sagm_realtime_distance_state';
         this.pendingRealTimeState = null;
-        this.backgroundPoller = new BackgroundGPSPoller(this);
+        this.backgroundPoller = new BackgroundGPSPoller(this, { 
+            pollDelay: 1000,
+            enableHighAccuracy: true
+        });
         this.lastProcessedCoordinate = null;
         this.lastProcessedCoordinateTime = 0;
         this.lastDistancePersistTime = 0;
         this.accuracyTuning = {
-            idleSnapKmh: 3,
-            minMoveMeters: 8,
-            antiZigzagAccuracy: 25
+            idleSnapKmh: 0,
+            minMoveMeters: 0,
+            antiZigzagAccuracy: 0
         };
         this.strictRealtime = true;
 
@@ -5230,15 +5268,16 @@ class EnhancedDTGPSLogger {
             // === TAMBAHKAN INI ===
             this.setupRealTimeCallbacks();
             this.realTimeProcessor.setTuning(this.accuracyTuning);
-            if (this.strictRealtime) {
-                this.realTimeProcessor.setStrictRealtime(true);
-            }
+            this.realTimeProcessor.setStrictRealtime(this.strictRealtime);
+            
             
             // Setup resume callbacks
             this.resumeManager.addResumeCallback(() => {
                 this.recoverFromBackground();
             });
-
+            this.backgroundPoller.setActive(true);
+        
+            console.log('⚡ REAL-TIME MAX Mode: Background polling 1 SECOND');
             // Setup offline queue callbacks
             this.offlineQueue.addProcessCallback((results) => {
                 this.addLog(`📡 Offline queue: ${results.sent} terkirim, ${results.failed} gagal`, 'info');
@@ -5622,6 +5661,46 @@ triggerEnhancedSync = async () => {
 
         this.addLog(`Driver ${driverName} (Unit ${unitNumber}) login berhasil`, 'success');
         this.updateDriverDisplay();
+    }
+    handleBackgroundPoll(position) {
+        if (!position || !this.realTimeProcessor) return;
+        
+        const now = Date.now();
+        
+        // ⚡ PROCESS REAL-TIME SETIAP 1 DETIK
+        const processedData = this.realTimeProcessor.processPosition(position);
+        
+        if (processedData) {
+            // ⚡ UPDATE REAL-TIME DATA
+            this.currentSpeed = processedData.speed;
+            this.totalDistance = processedData.totalDistance;
+            this.lastPosition = {
+                lat: position.coords.latitude,
+                lng: position.coords.longitude,
+                accuracy: position.coords.accuracy,
+                bearing: position.coords.heading,
+                timestamp: new Date()
+            };
+    
+            // ⚡ UPDATE UI MESKI BACKGROUND
+            this.updateRealTimeDisplay({
+                speed: processedData.speed,
+                distance: processedData.distance,
+                totalDistance: processedData.totalDistance,
+                position: processedData.position
+            });
+    
+            // ⚡ SIMPAN DATA
+            this.saveWaypointFromProcessedData(processedData, position);
+            
+            // ⚡ LOG REAL-TIME BACKGROUND
+            console.log(`⚡ Background Poll [${new Date().toLocaleTimeString()}]:`, {
+                speed: processedData.speed.toFixed(1) + ' km/h',
+                total: processedData.totalDistance.toFixed(3) + ' km',
+                lat: processedData.position.lat.toFixed(6),
+                lng: processedData.position.lng.toFixed(6)
+            });
+        }
     }
 
     startJourney = () => {
