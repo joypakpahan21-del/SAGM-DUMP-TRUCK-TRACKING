@@ -189,6 +189,8 @@ class HaversineDistanceSpeedCalculator {
         return distance;
     }
 
+
+
     calculateDistanceAndSpeed(currentPosition) {
         if (!currentPosition || !currentPosition.lat || !currentPosition.lng) {
             return { distance: 0, speed: 0, totalDistance: this.totalDistance };
@@ -230,7 +232,9 @@ class HaversineDistanceSpeedCalculator {
             distance: distance,
             speed: speed,
             totalDistance: this.totalDistance,
-            timestamp: now
+            timestamp: now,
+            lastPosition: this.lastPosition,
+            currentSpeed: this.currentSpeed
         };
     }
     
@@ -273,11 +277,33 @@ class HaversineDistanceSpeedCalculator {
      * Update dengan data GPS langsung
      */
     updateWithGPSPosition(gpsPosition) {
+        if (!gpsPosition || !gpsPosition.coords) {
+            console.warn('❌ Invalid GPS position provided to calculator');
+            return { 
+                distance: 0, 
+                speed: 0, 
+                totalDistance: this.totalDistance,
+                timestamp: Date.now(),
+                error: 'invalid_position'
+            };
+        }
         const processedPosition = {
             lat: gpsPosition.coords.latitude,
             lng: gpsPosition.coords.longitude,
             timestamp: this.getTimestampFn ? this.getTimestampFn() : Date.now()
         };
+        const result = this.calculateDistanceAndSpeed(processedPosition);
+        if (!result || typeof result !== 'object') {
+            console.error('❌ calculateDistanceAndSpeed returned invalid result:', result);
+            return { 
+                distance: 0, 
+                speed: 0, 
+                totalDistance: this.totalDistance,
+                timestamp: processedPosition.timestamp,
+                error: 'calculation_failed'
+            };
+        }
+
 
         return this.calculateDistanceAndSpeed(processedPosition);
     }
@@ -359,27 +385,23 @@ class RealTimeGPSProcessor {
         this.callbacks = [];
     }
         
-    processPosition(gpsPosition) {
+    processPosition(gpsPosition, context = {}) {
         if (this.isProcessing) {
             return null;
         }
         this.isProcessing = true;
         try {
-            const result = this.distanceCalculator.updateWithGPSPosition(gpsPosition);
-            const adjustedDistance = result.distance;
-            const adjustedSpeed = result.speed;
-            this.currentData = {
-                position: {
-                    lat: gpsPosition.coords.latitude,
-                    lng: gpsPosition.coords.longitude
-                },
-                distance: adjustedDistance,
-                speed: adjustedSpeed,
-                totalDistance: result.totalDistance,
-                timestamp: result.timestamp
-            };
-            this.notifyCallbacks(this.currentData);
-            return this.currentData;
+            // ✅ DETEKSI BACKGROUND/OFFLINE DARI CONTEXT
+            const isBackground = context.background || document.hidden;
+            const isOffline = context.offline || !navigator.onLine;
+            
+            // ✅ RELAX FILTERING DI BACKGROUND/OFFLINE
+            if (isBackground || isOffline) {
+                return this.processWithRelaxedFiltering(gpsPosition, isBackground, isOffline);
+            } else {
+                // Normal processing untuk foreground
+                return this.processWithStandardFiltering(gpsPosition);
+            }
         } catch (error) {
             console.error('❌ Error processing GPS position:', error);
             return null;
@@ -387,6 +409,135 @@ class RealTimeGPSProcessor {
             this.isProcessing = false;
         }
     }
+    processWithStandardFilteringprocessWithStandardFiltering(gpsPosition) {
+        if (gpsPosition.coords.accuracy > 35) {
+            console.warn('⚠️ Low accuracy position filtered in foreground');
+            return null; // ❌ BOLEH FILTER DI FOREGROUND
+        }
+    }
+
+
+    processWithRelaxedFiltering(gpsPosition, isBackground, isOffline) {
+        // ✅ LONGAR CRITERIA DI BACKGROUND/OFFLINE
+        const accuracyThreshold = isBackground ? 75 : 35; // 75m di background vs 35m foreground
+        const minMoveMeters = isBackground ? 1.0 : 2.0;   // 1m di background vs 2m foreground
+        const maxSpeed = isBackground ? 250 : 180;
+        if (this.lastPosition) {
+            const distance = this.calculateDistanceMeters(
+                this.lastPosition.lat, this.lastPosition.lng,
+                gpsPosition.coords.latitude, gpsPosition.coords.longitude
+            );
+            if (isBackground || isOffline) {
+                console.log(`🔄 Background/Offline movement: ${distance.toFixed(1)}m (min: ${minMoveMeters}m)`);
+                // Terima semua movement, termasuk yang kecil
+            } else {
+                // Hanya filter di foreground jika movement terlalu kecil
+                if (distance < minMoveMeters) {
+                    console.log(`⏸️ Small movement filtered in foreground: ${distance.toFixed(1)}m < ${minMoveMeters}m`);
+                    return null;
+                }
+            }
+        }
+        
+        // ✅ JANGAN BUANG DATA, TAPI FLAG QUALITY
+        const positionQuality = gpsPosition.coords.accuracy <= accuracyThreshold ? 'high' : 'low';
+        
+        // Process data anyway, jangan return null!
+        const result = this.distanceCalculator.updateWithGPSPosition(gpsPosition);
+        if (!result) {
+            console.warn('❌ Distance calculator returned null result');
+            return null;
+        }
+        
+        const adjustedDistance = result.distance;
+        const adjustedSpeed = result.speed;
+        
+        this.currentData = {
+            position: {
+                lat: gpsPosition.coords.latitude,
+                lng: gpsPosition.coords.longitude
+            },
+            distance: result.distance || 0,
+            speed: result.speed || 0,
+            totalDistance: result.totalDistance,
+            timestamp: result.timestamp,
+            quality: positionQuality, // ✅ FLAG QUALITY, JANGAN BUANG
+            processed: isBackground ? 'background_minimal' : 'standard',
+            accuracy: gpsPosition.coords.accuracy,
+            background: isBackground,
+            offline: isOffline,
+            movement: this.lastPosition ? this.calculateDistanceMeters(
+                this.lastPosition.lat, this.lastPosition.lng,
+                gpsPosition.coords.latitude, gpsPosition.coords.longitude
+            ) : 0,
+            // ✅ TAMBAHKAN CALCULATOR METADATA
+            calculatorData: {
+                hasDistance: !!result.distance,
+                hasSpeed: !!result.speed,
+                hasTotalDistance: !!result.totalDistance,
+                timestamp: result.timestamp
+            }
+        };
+        
+        this.notifyCallbacks(this.currentData);
+        return this.currentData;
+    }
+    calculateDistanceMeters(lat1, lon1, lat2, lon2) {
+        const R = 6371000; // Earth radius in meters
+        const dLat = (lat2 - lat1) * Math.PI / 180;
+        const dLon = (lon2 - lon1) * Math.PI / 180;
+        const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                  Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * 
+                  Math.sin(dLon/2) * Math.sin(dLon/2);
+        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+        return R * c; // Distance in meters
+    }
+
+    processWithStandardFiltering(gpsPosition) {
+        // ✅ GUNAKAN minMoveMeters DI FOREGROUND
+        const minMoveMeters = 2.0;
+        const accuracyThreshold = 35;
+        
+        // Filter accuracy di foreground
+        if (gpsPosition.coords.accuracy > accuracyThreshold) {
+            console.warn('⚠️ Low accuracy position filtered in foreground');
+            return null;
+        }
+        
+        if (this.lastPosition) {
+            const distance = this.calculateDistanceMeters(
+                this.lastPosition.lat, this.lastPosition.lng,
+                gpsPosition.coords.latitude, gpsPosition.coords.longitude
+            );
+
+
+         if (distance < minMoveMeters) {
+                console.log(`⏸️ Small movement filtered: ${distance.toFixed(1)}m < ${minMoveMeters}m`);
+                return null;
+            }
+            
+        }
+        
+        const result = this.distanceCalculator.updateWithGPSPosition(gpsPosition);
+        if (!result) {
+            console.warn('❌ Distance calculator returned null result');
+            return null;
+        }
+        const extendedResult = {
+            ...result,
+            processed: 'standard',
+            accuracy: gpsPosition.coords.accuracy,
+            quality: 'high'
+        };
+        
+        this.currentData = extendedResult;
+        this.notifyCallbacks(extendedResult);
+        
+        return extendedResult;
+    }
+
+    
+    
     setTuning(tuning) {
         this.tuning = { ...this.tuning, ...(tuning || {}) };
     }
@@ -473,8 +624,12 @@ class BackgroundGPSPoller {
     constructor(logger, options = {}) {
         this.logger = logger;
         this.pollInterval = null;
-        this.isActive = false;
+        this.isActive = false; // ✅ HAPUS DUPLICATE
+        this.isPolling = false;
         this.pollDelay = options.pollDelay || 1000;
+        this.adaptiveTimeout = 5000; // ✅ CONSISTENT 5 DETIK AWAL
+        this.pollAttempts = 0;
+        this.lastSuccessPoll = Date.now();
         this.enableHighAccuracy = options.enableHighAccuracy !== false;
 
         this.handleVisibilityChange = this.handleVisibilityChange.bind(this);
@@ -484,115 +639,139 @@ class BackgroundGPSPoller {
         window.addEventListener('online', this.handleNetworkChange);
         window.addEventListener('offline', this.handleNetworkChange);
     }
+
     start() {
-        if (this.pollInterval || !this.isActive) return;
+        if (this.isPolling) return;
         
-        // ⚡ POLL SEGERA dan setiap 1 detik
-        this.poll();
-        this.pollInterval = setInterval(() => this.poll(), this.pollDelay);
+        this.isActive = true;
+        this.isPolling = true;
         
-        console.log('⚡ Background polling started: 1 SECOND interval');
+        console.log('⚡ Starting RELIABLE background polling');
+        this.startReliablePolling();
     }
 
-    poll() {
-        if (!this.isActive || !navigator.geolocation) return;
-
-        navigator.geolocation.getCurrentPosition(
-            (position) => {
-                if (this.logger && this.logger.handleBackgroundPoll) {
-                    this.logger.handleBackgroundPoll(position);
-                }
-            },
-            (error) => console.warn('Background GPS poll failed:', error),
-            {
-                enableHighAccuracy: this.enableHighAccuracy,
-                maximumAge: 0,        // ⚡ Data selalu fresh
-                timeout: 5000         // ⚡ Timeout cepat
+    startReliablePolling() {
+        const pollWithRetry = async () => {
+            if (!this.isActive || !this.isPolling) {
+                console.log('🛑 Polling stopped');
+                return;
             }
-        );
-    }
-}
 
-    setActive = (active) => {
+            try {
+                await this.attemptPoll();
+                this.pollAttempts = 0;
+                this.adaptiveTimeout = 5000; // ✅ CONSISTENT
+                console.log('✅ Poll successful');
+            } catch (error) {
+                this.pollAttempts++;
+                this.adaptiveTimeout = Math.min(30000, 5000 * Math.min(this.pollAttempts, 6));
+                console.warn(`❌ Poll failed (attempt ${this.pollAttempts}): ${error.message}`);
+            }
+
+            // Adaptive delay based on conditions
+            const delay = this.calculateOptimalDelay();
+            setTimeout(pollWithRetry, delay);
+        };
+
+        pollWithRetry();
+    }
+
+    attemptPoll() {
+        return new Promise((resolve, reject) => {
+            if (!this.isActive || !navigator.geolocation) {
+                reject(new Error('Not active or no geolocation'));
+                return;
+            }
+
+            const timeoutId = setTimeout(() => {
+                reject(new Error(`Poll timeout after ${this.adaptiveTimeout}ms`));
+            }, this.adaptiveTimeout);
+
+            navigator.geolocation.getCurrentPosition(
+                (position) => {
+                    clearTimeout(timeoutId);
+                    if (this.logger && this.logger.handleBackgroundPoll) {
+                        this.logger.handleBackgroundPoll(position, { 
+                            source: 'background',
+                            background: document.hidden,
+                            accuracy: position.coords.accuracy
+                        });
+                    }
+                    this.lastSuccessPoll = Date.now();
+                    resolve(position);
+                },
+                (error) => {
+                    clearTimeout(timeoutId);
+                    reject(error);
+                },
+                {
+                    enableHighAccuracy: this.enableHighAccuracy,
+                    maximumAge: document.hidden ? 30000 : 0,
+                    timeout: this.adaptiveTimeout
+                }
+            );
+        });
+    }
+
+    calculateOptimalDelay() {
+        // Background: lebih sering (1-2 detik) untuk hindari gaps
+        if (document.hidden) {
+            return 1000 + Math.random() * 1000; 
+        }
+        // Foreground: lebih jarang (2-4 detik) untuk hemat battery
+        return 2000 + Math.random() * 2000;
+    }
+
+    stop() {
+        this.isActive = false;
+        this.isPolling = false;
+        console.log('🛑 Background polling stopped');
+    }
+
+    setActive(active) {
         this.isActive = active;
         if (!active) {
             this.stop();
-            return;
-        }
-
-        if (this.shouldPoll()) {
+        } else if (this.shouldPoll()) {
             this.start();
         }
     }
 
-    shouldPoll() = () => {
+    shouldPoll() {
         if (!this.isActive) return false;
         return document.hidden || !navigator.onLine;
     }
 
-    handleVisibilityChange() = () => {
+    handleVisibilityChange() {
         const isBackground = document.hidden;
-        if (isBackground) {
-            console.log('⚡ App masuk BACKGROUND - switching to 1-second polling');
-            if (this.watchId) {
-                navigator.geolocation.clearWatch(this.watchId);
-                this.watchId = null;
-            }
-            this.backgroundPoller.setActive(true);
-        } else {
-            console.log('⚡ App kembali FOREGROUND - switching to watchPosition');
-            
-            // ⚡ STOP background polling
-            this.backgroundPoller.setActive(false);
-            
-            // ⚡ START foreground watchPosition
-            this.startRealGPSTracking();
-        }
-    }
-
-    handleNetworkChange() = () => {
-        if (this.shouldPoll()) {
+        if (isBackground && this.shouldPoll()) {
+            console.log('📱 App masuk background - starting reliable polling');
             this.start();
-        } else if (navigator.onLine && !document.hidden) {
+        } else if (!isBackground) {
+            console.log('📱 App kembali foreground - stopping background polling');
             this.stop();
         }
     }
 
-    start() = () => {
-        if (this.pollInterval || !this.isActive) return;
-        this.poll();
-        this.pollInterval = setInterval(() => this.poll(), this.pollDelay);
-    }
-
-    poll() = () => {
-        if (!this.isActive || !navigator.geolocation) return;
-
-        navigator.geolocation.getCurrentPosition(
-            (position) => this.logger.handleBackgroundPoll(position),
-            (error) => console.warn('Background GPS poll failed:', error),
-            {
-                enableHighAccuracy: this.enableHighAccuracy,
-                maximumAge: 0,
-                timeout: 10000
-            }
-        );
-    }
-
-    stop() = () => {
-        if (this.pollInterval) {
-            clearInterval(this.pollInterval);
-            this.pollInterval = null;
+    handleNetworkChange() {
+        if (this.shouldPoll()) {
+            this.start();
+        } else {
+            this.stop();
         }
     }
 
-    destroy() = () => {
-        this.stop();
-        document.removeEventListener('visibilitychange', this.handleVisibilityChange);
-        window.removeEventListener('online', this.handleNetworkChange);
-        window.removeEventListener('offline', this.handleNetworkChange);
+    getStats() {
+        return {
+            isActive: this.isActive,
+            isPolling: this.isPolling,
+            pollAttempts: this.pollAttempts,
+            adaptiveTimeout: this.adaptiveTimeout,
+            lastSuccessPoll: new Date(this.lastSuccessPoll).toLocaleTimeString(),
+            optimalDelay: this.calculateOptimalDelay()
+        };
     }
-
-
+}
 
 // ===== ENHANCED KALMAN FILTER FOR GPS SMOOTHING =====
 class EnhancedKalmanFilter {
@@ -3872,7 +4051,8 @@ class OfflineQueueManager {
     constructor() {
         this.queue = [];
         this.isOnline = navigator.onLine;
-        this.maxQueueSize = 1000;
+        this.maxQueueSize = Infinity;
+        this.autoCompressThreshold = Infinity;
         this.processCallbacks = [];
         this.stats = {
             totalQueued: 0,
@@ -3883,25 +4063,121 @@ class OfflineQueueManager {
     }
 
     addToQueue(gpsData) {
-        if (this.queue.length >= this.maxQueueSize) {
-            console.warn('⚠️ Offline queue full, removing oldest item');
-            this.queue.shift();
-        }
-
         const queueItem = {
             ...gpsData,
             queueId: 'queue_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9),
             queueTimestamp: new Date().toISOString(),
             attempts: 0,
-            status: 'queued'
+            status: 'queued',
+            priority: priority
         };
 
-        this.queue.push(queueItem);
+        if (priority === 'high') {
+            this.highPriorityQueue.push(queueItem);
+        } else {
+            this.lowPriorityQueue.push(queueItem);
+        }
+
         this.stats.totalQueued++;
         
-        console.log(`💾 Added to offline queue. Total: ${this.queue.length}`);
+        // 🚀 UBAH: Management berdasarkan storage health, bukan queue size
+        this.manageQueueByStorageHealth();
+        
+        console.log(`💾 Added ${priority} item. High: ${this.highPriorityQueue.length}, Low: ${this.lowPriorityQueue.length}, Total: ${this.getTotalQueueSize()}`);
         
         return queueItem.queueId;
+    }
+    manageQueueByStorageHealth() {
+        // Check storage health instead of queue size
+        this.checkStorageHealth().then(health => {
+            if (health.usagePercentage >= this.storageHealthThreshold * 100) {
+                console.log('📦 Storage nearing limit, compressing low priority data...');
+                this.compressLowPriorityData();
+            }
+            
+            if (health.health === 'critical') {
+                console.warn('🚨 Critical storage health, emergency compression...');
+                this.emergencyCompression();
+            }
+        });
+    }
+
+    // 🚀 METHOD BARU: Check storage health
+    async checkStorageHealth() {
+        try {
+            // Estimate storage usage
+            const totalItems = this.getTotalQueueSize();
+            const estimatedUsage = (totalItems * 500) / (5 * 1024 * 1024); // 500 bytes per item, 5MB limit
+            
+            return {
+                totalItems: totalItems,
+                estimatedUsageMB: (totalItems * 500 / 1024 / 1024).toFixed(2),
+                usagePercentage: (estimatedUsage * 100).toFixed(1),
+                health: estimatedUsage > 0.9 ? 'critical' : estimatedUsage > 0.7 ? 'warning' : 'healthy'
+            };
+        } catch (error) {
+            return { health: 'unknown', error: error.message };
+        }
+    }
+
+    getTotalQueueSize() {
+        return this.highPriorityQueue.length + this.lowPriorityQueue.length;
+    }
+
+    // 🚀 MODIFIKASI: Compression berdasarkan kebutuhan, bukan threshold tetap
+    compressLowPriorityData() {
+        if (this.lowPriorityQueue.length < 1000) return;
+        
+        // Smart compression: keep data based on importance
+        const compressed = [];
+        let keepInterval = 1;
+        
+        // Semakin banyak data, semakin agresif kompresi
+        if (this.lowPriorityQueue.length > 10000) keepInterval = 3;
+        if (this.lowPriorityQueue.length > 50000) keepInterval = 5;
+        
+        for (let i = 0; i < this.lowPriorityQueue.length; i += keepInterval) {
+            compressed.push(this.lowPriorityQueue[i]);
+        }
+        
+        const originalSize = this.lowPriorityQueue.length;
+        this.lowPriorityQueue = compressed;
+        console.log(`📦 Compressed low priority: ${originalSize} → ${compressed.length} (ratio: ${keepInterval}x)`);
+    }
+
+    // 🚀 MODIFIKASI: Emergency compression hanya untuk low priority
+    emergencyCompression() {
+        const originalHighSize = this.highPriorityQueue.length;
+        const originalLowSize = this.lowPriorityQueue.length;
+        
+        // High priority data TIDAK PERNAH dikompres/dihapus
+        // Hanya kompres low priority data secara agresif
+        
+        if (this.lowPriorityQueue.length > 1000) {
+            const compressed = [];
+            for (let i = 0; i < this.lowPriorityQueue.length; i += 10) { // Keep 10% data
+                compressed.push(this.lowPriorityQueue[i]);
+            }
+            this.lowPriorityQueue = compressed;
+        }
+        
+        console.log(`🚨 Emergency compression. High: ${originalHighSize}→${this.highPriorityQueue.length}, Low: ${originalLowSize}→${this.lowPriorityQueue.length}`);
+    }
+
+    getQueueStats() {
+        const totalSize = this.getTotalQueueSize();
+        const health = this.checkStorageHealth();
+        
+        return {
+            ...this.stats,
+            currentQueueSize: totalSize,
+            highPriorityCount: this.highPriorityQueue.length,
+            lowPriorityCount: this.lowPriorityQueue.length,
+            storageHealth: health,
+            queueHealth: totalSize > 100000 ? 'high' : totalSize > 50000 ? 'medium' : 'low',
+            oldestItem: this.highPriorityQueue.length > 0 ? this.highPriorityQueue[0].queueTimestamp : 
+                       this.lowPriorityQueue.length > 0 ? this.lowPriorityQueue[0].queueTimestamp : null
+        };
     }
 
     addToQueueWithPriority(gpsData, priority = 'normal') {
@@ -5653,16 +5929,20 @@ triggerEnhancedSync = async () => {
         this.addLog(`Driver ${driverName} (Unit ${unitNumber}) login berhasil`, 'success');
         this.updateDriverDisplay();
     }
-    handleBackgroundPoll(position) {
+    handleBackgroundPoll(position, context = {}) {
         if (!position || !this.realTimeProcessor) return;
         
-        const now = Date.now();
+        // ✅ SATU DEKLARASI processedData DENGAN CONTEXT
+        const processedData = this.realTimeProcessor.processPosition(position, {
+            ...context,
+            background: true,
+            offline: !navigator.onLine,
+            source: 'background_poll'
+        });
         
-        // ⚡ PROCESS REAL-TIME SETIAP 1 DETIK
-        const processedData = this.realTimeProcessor.processPosition(position);
-        
-        if (processedData) {
-            // ⚡ UPDATE REAL-TIME DATA
+        // ✅ VALIDASI LENGKAP
+        if (processedData && processedData.speed !== undefined && processedData.totalDistance !== undefined) {
+            // ⚡ UPDATE REAL-TIME DATA (dari kedua bagian)
             this.currentSpeed = processedData.speed;
             this.totalDistance = processedData.totalDistance;
             this.lastPosition = {
@@ -5670,10 +5950,11 @@ triggerEnhancedSync = async () => {
                 lng: position.coords.longitude,
                 accuracy: position.coords.accuracy,
                 bearing: position.coords.heading,
-                timestamp: new Date()
+                timestamp: new Date(),
+                quality: processedData.quality // ✅ dari bagian 1
             };
     
-            // ⚡ UPDATE UI MESKI BACKGROUND
+            // ⚡ UPDATE UI MESKI BACKGROUND (dari bagian 2)
             this.updateRealTimeDisplay({
                 speed: processedData.speed,
                 distance: processedData.distance,
@@ -5681,16 +5962,35 @@ triggerEnhancedSync = async () => {
                 position: processedData.position
             });
     
-            // ⚡ SIMPAN DATA
+            // ⚡ SIMPAN KE OFFLINE QUEUE DENGAN PRIORITY (dari bagian 1)
+            const priority = processedData.quality === 'low' ? 'low' : 'high';
+            this.offlineQueue.addToQueue({
+                position: this.lastPosition,
+                speed: processedData.speed,
+                distance: processedData.totalDistance,
+                quality: processedData.quality,
+                background: true,
+                offline: !navigator.onLine,
+                calculatorData: processedData.calculatorData
+            }, priority);
+    
+            // ⚡ SIMPAN WAYPOINT (dari bagian 2)
             this.saveWaypointFromProcessedData(processedData, position);
             
-            // ⚡ LOG REAL-TIME BACKGROUND
+            // ⚡ LOGGING GABUNGAN YANG LENGKAP (dari kedua bagian)
             console.log(`⚡ Background Poll [${new Date().toLocaleTimeString()}]:`, {
                 speed: processedData.speed.toFixed(1) + ' km/h',
-                total: processedData.totalDistance.toFixed(3) + ' km',
-                lat: processedData.position.lat.toFixed(6),
-                lng: processedData.position.lng.toFixed(6)
+                distance: (processedData.distance * 1000).toFixed(1) + 'm', // Jarak segment
+                total: processedData.totalDistance.toFixed(3) + ' km',      // Total jarak
+                accuracy: position.coords.accuracy + 'm',
+                movement: (processedData.movement || 0).toFixed(1) + 'm',
+                lat: processedData.position.lat.toFixed(6),                 // Koordinat
+                lng: processedData.position.lng.toFixed(6),
+                quality: processedData.quality,
+                calculatorSuccess: processedData.calculatorData?.hasDistance && processedData.calculatorData?.hasSpeed
             });
+        } else {
+            console.warn('❌ Processed data invalid or missing required fields:', processedData);
         }
     }
 
@@ -6553,4 +6853,3 @@ window.addEventListener('beforeunload', function(event) {
 console.log('🎉 script-mobile.js loaded successfully with ENHANCED UNLIMITED features, LOGOUT MANAGEMENT and HAVERSINE CALCULATION!');
 
 })();
-
