@@ -13,6 +13,18 @@ const FIREBASE_CONFIG = {
 firebase.initializeApp(FIREBASE_CONFIG);
 const database = firebase.database();
 
+function calculateDistance(lat1, lng1, lat2, lng2) {
+    const R = 6371; // Earth's radius in km
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLng = (lng2 - lng1) * Math.PI / 180;
+    const a = 
+        Math.sin(dLat/2) * Math.sin(dLat/2) +
+        Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * 
+        Math.sin(dLng/2) * Math.sin(dLng/2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    return R * c;
+}
+
 // ==== MAIN ADVANCED GPS TRACKING SYSTEM ====
 class AdvancedSAGMGpsTracking {
     constructor() {
@@ -678,20 +690,8 @@ updateDriverData(driverData) {
                     }
                 });
             });
-
-            calculateDistance = (lat1, lng1, lat2, lng2) => {
-                
-                const R = 6371; // Earth's radius in km
-                const dLat = (lat2 - lat1) * Math.PI / 180;
-                const dLng = (lng2 - lng1) * Math.PI / 180;
-                const a = 
-                    Math.sin(dLat/2) * Math.sin(dLat/2) +
-                    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * 
-                    Math.sin(dLng/2) * Math.sin(dLng/2);
-                const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-                return R * c;
-            }
-            
+        
+           
         } catch (error) {
             console.error('🔥 Critical Firebase error:', error);
             this.logData('Critical Firebase connection error', 'error', { 
@@ -945,6 +945,18 @@ updateDriverData(driverData) {
         unit.lastFuelUpdate = now;
 
         this.addHistoryPoint(unit);
+    }
+
+    calculateDistance(lat1, lng1, lat2, lng2) {
+        const R = 6371; // Earth's radius in km
+        const dLat = (lat2 - lat1) * Math.PI / 180;
+        const dLng = (lng2 - lng1) * Math.PI / 180;
+        const a = 
+            Math.sin(dLat/2) * Math.sin(dLat/2) +
+            Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * 
+            Math.sin(dLng/2) * Math.sin(dLng/2);
+        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+        return R * c;
     }
 
     // ===== ENHANCED STATISTICS WITH ANALYTICS =====
@@ -3635,6 +3647,26 @@ class GeofencingManager {
             zone.lat, zone.lng
         );
         return distance <= (zone.radius / 1000); // Convert to km
+    }
+
+    calculateDistance(lat1, lng1, lat2, lng2) {
+        const R = 6371;
+        const dLat = (lat2 - lat1) * Math.PI / 180;
+        const dLng = (lng2 - lng1) * Math.PI / 180;
+        const a = 
+            Math.sin(dLat/2) * Math.sin(dLat/2) +
+            Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * 
+            Math.sin(dLng/2) * Math.sin(dLng/2);
+        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+        return R * c;
+    }
+
+    isUnitInZone(unit, zone) {
+        const distance = this.calculateDistance( // PAKAI this.
+            unit.latitude, unit.longitude,
+            zone.lat, zone.lng
+        );
+        return distance <= (zone.radius / 1000);
     }
 
     calculateDistance(lat1, lng1, lat2, lng2) {
