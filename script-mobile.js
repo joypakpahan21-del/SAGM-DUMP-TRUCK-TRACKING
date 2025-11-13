@@ -98,39 +98,48 @@ const database = firebase.database();
 }
 
 
-setupSpeedStopwatch = () => {
+setupSpeedStopwatch= () => {
+    console.log('⏱️ Setting up speed stopwatch system...');
     if (this.distanceCalculator) {
-        this.distanceCalculator.setTimestampGetter(() => {
+        this.distanceCalculator.getTimestampFn = () => {
             return this.stopwatch.getCurrentTimestamp();
-        });
+        };
     }
-    if (this.realTimeProcessor && this.realTimeProcessor.distanceCalculator) {
-        this.realTimeProcessor.distanceCalculator.setTimestampGetter(() => {
+    if (this.realTimeProcessor) {
+        this.realTimeProcessor.getTimestampFn = () => {
             return this.stopwatch.getCurrentTimestamp();
-        });
+        };
+        if (this.realTimeProcessor.distanceCalculator) {
+            this.realTimeProcessor.distanceCalculator.getTimestampFn = () => {
+                return this.stopwatch.getCurrentTimestamp();
+            };
+        }
     }
-    
+
     console.log('✅ Speed stopwatch setup completed');
 }
 
-startJourney = () => {
+startJourney= () => {
     this.journeyStatus = 'started';
     this.sessionStartTime = new Date();
-    
-    // ✅ START STOPWATCH UNTUK KECEPATAN
+    this.totalDistance = 0;
+    this.dataPoints = 0;
+
     if (this.stopwatch) {
         this.stopwatch.start();
-    }
-    
+        console.log('⏱️ MAIN STOPWATCH STARTED for distance calculation');
+        }
+    this.resetRealTimeTracking();
     this.startRealGPSTracking();
     this.startDataTransmission();
-    this.addLog('Perjalanan dimulai', 'success');
+    this.addLog('Perjalanan dimulai - Stopwatch aktif', 'success');
     this.updateJourneyDisplay();
 }
 
+
 // ===== HAVERSINE DISTANCE & REAL-TIME SPEED CALCULATOR =====
 class HaversineDistanceSpeedCalculator {
-    constructor() {
+    constructor(mainStopwatch) {
         this.positionHistory = [];
         this.totalDistance = 0;
         this.currentSpeed = 0;
@@ -141,7 +150,14 @@ class HaversineDistanceSpeedCalculator {
         this.EARTH_RADIUS_KM = 6371;
         this.MIN_TIME_DIFF = 0.1; 
         this.getTimestampFn = null;
-        this.stopwatch = new IndependentStopwatch();
+        this.mainStopwatch = mainStopwatch;
+        this.getTimestampFn = () => {
+            if (this.mainStopwatch) {
+                return this.mainStopwatch.getCurrentTimestamp();
+            }
+            console.error('❌ Main stopwatch not available');
+            return Date.now();
+        };
         this.setupStopwatchSystem();
     }
 
@@ -196,7 +212,7 @@ class HaversineDistanceSpeedCalculator {
             return { distance: 0, speed: 0, totalDistance: this.totalDistance };
         }
 
-        const now = this.getTimestampFn ? this.getTimestampFn() : 0;
+        const now = this.getTimestampFn();
         const currentPoint = {
             lat: currentPosition.lat,
             lng: currentPosition.lng,
@@ -221,7 +237,7 @@ class HaversineDistanceSpeedCalculator {
                 speed = distance / timeDiffHours;
                 speed = this.validateSpeed(speed);
             }
-
+            console.log(`📏 Distance Calc: ${(distance * 1000).toFixed(1)}m, Time: ${timeDiffMs}ms, Speed: ${speed.toFixed(1)}km/h`);
             this.totalDistance += distance;
         }
 
@@ -361,11 +377,20 @@ class HaversineDistanceSpeedCalculator {
    
 // ===== REAL-TIME GPS PROCESSOR =====
 class RealTimeGPSProcessor {
-    constructor() {
+    constructor(mainStopwatch) {
         this.distanceCalculator = new HaversineDistanceSpeedCalculator();
-        this.updateInterval = 1000; // 1 detik (tidak dipakai untuk throttle)
+        this.updateInterval = 1000; 
         this.isProcessing = false;
         this.strictRealtime = true;
+        this.distanceCalculator = new HaversineDistanceSpeedCalculator(mainStopwatch);
+        this.mainStopwatch = mainStopwatch;
+        this.isProcessing = false;
+        this.getTimestampFn = () => {
+            if (this.mainStopwatch) {
+                return this.mainStopwatch.getCurrentTimestamp();
+            }
+            return Date.now();
+        };
         this.tuning = {
             idleSnapKmh: 0,
             minMoveMeters: 0,
@@ -394,14 +419,36 @@ class RealTimeGPSProcessor {
             // ✅ DETEKSI BACKGROUND/OFFLINE DARI CONTEXT
             const isBackground = context.background || document.hidden;
             const isOffline = context.offline || !navigator.onLine;
+            const processedPosition = {
+                lat: gpsPosition.coords.latitude,
+                lng: gpsPosition.coords.longitude,
+                timestamp: this.getTimestampFn(), // ✅ PAKAI STOPWATCH UTAMA
+                accuracy: gpsPosition.coords.accuracy
+            };
+            const result = this.distanceCalculator.calculateDistanceAndSpeed(processedPosition);
             
-            // ✅ RELAX FILTERING DI BACKGROUND/OFFLINE
-            if (isBackground || isOffline) {
-                return this.processWithRelaxedFiltering(gpsPosition, isBackground, isOffline);
-            } else {
-                // Normal processing untuk foreground
-                return this.processWithStandardFiltering(gpsPosition);
+            if (!result) {
+                console.warn('❌ Distance calculator returned null result');
+                return null;
             }
+            const finalResult = {
+                position: {
+                    lat: processedPosition.lat,
+                    lng: processedPosition.lng
+                },
+                distance: result.distance || 0,
+                speed: result.speed || 0,
+                totalDistance: result.totalDistance || 0,
+                timestamp: result.timestamp,
+                quality: this.assessQuality(processedPosition),
+                processed: isBackground ? 'background' : 'foreground',
+                accuracy: processedPosition.accuracy,
+                background: isBackground,
+                offline: isOffline
+            };
+            console.log(`📍 Real-time Processed: ${finalResult.distance.toFixed(4)}km, Total: ${finalResult.totalDistance.toFixed(3)}km, Speed: ${finalResult.speed.toFixed(1)}km/h`);
+            this.notifyCallbacks(finalResult);
+            return finalResult;
         } catch (error) {
             console.error('❌ Error processing GPS position:', error);
             return null;
@@ -409,13 +456,12 @@ class RealTimeGPSProcessor {
             this.isProcessing = false;
         }
     }
-    processWithStandardFilteringprocessWithStandardFiltering(gpsPosition) {
-        if (gpsPosition.coords.accuracy > 35) {
-            console.warn('⚠️ Low accuracy position filtered in foreground');
-            return null; // ❌ BOLEH FILTER DI FOREGROUND
-        }
+    assessQuality(position) {
+        if (position.accuracy <= 10) return 'excellent';
+        if (position.accuracy <= 25) return 'good';
+        if (position.accuracy <= 50) return 'fair';
+        return 'poor';
     }
-
 
     processWithRelaxedFiltering(gpsPosition, isBackground, isOffline) {
         // ✅ LONGAR CRITERIA DI BACKGROUND/OFFLINE
@@ -5561,6 +5607,14 @@ class EnhancedDTGPSLogger {
             totalUptime: 0
         };
         this.stopwatch = new IndependentStopwatch(); 
+        this.distanceCalculator = new HaversineDistanceSpeedCalculator(this.stopwatch);
+        this.realTimeProcessor = new RealTimeGPSProcessor(this.stopwatch);
+        this.gpsProcessor = new EnhancedGPSProcessor();
+        this.speedCalculator = new EnhancedSpeedCalculator();
+        this.setupSpeedStopwatch();
+        this.totalDistance = 0;
+        this.currentSpeed = 0;
+        this.lastPosition = null;
         
 
         this.restorePersistentDistanceState();
@@ -5653,17 +5707,56 @@ class EnhancedDTGPSLogger {
 
         const isBackground = forceBackground || document.hidden;
         const isOffline = forceOffline || !navigator.onLine;
-        const immediateData = {
-            speed: position.coords.speed ? (position.coords.speed * 3.6) : 0,
-            position: {
-                lat: position.coords.latitude,
-                lng: position.coords.longitude
-            },
-            totalDistance: this.totalDistance
-        };
-        
-    }
 
+        try {
+            const processedData = this.realTimeProcessor.processPosition(position, {
+                background: isBackground,
+                offline: isOffline,
+                source: source
+            });
+            if (processedData) {
+                this.currentSpeed = processedData.speed || 0;
+                this.totalDistance = processedData.totalDistance || 0;
+                this.lastPosition = {
+                    lat: position.coords.latitude,
+                    lng: position.coords.longitude,
+                    accuracy: position.coords.accuracy,
+                    bearing: position.coords.heading,
+                    timestamp: new Date()
+                };
+                this.updateRealTimeDisplay(processedData);
+                if (this.healthMetrics.gpsUpdates % 5 === 0) {
+                    console.log(`📊 GPS Update #${this.healthMetrics.gpsUpdates}:`, {
+                        speed: this.currentSpeed.toFixed(1) + ' km/h',
+                        totalDistance: this.totalDistance.toFixed(3) + ' km',
+                        segmentDistance: (processedData.distance * 1000).toFixed(1) + ' m',
+                        background: isBackground,
+                        offline: isOffline,
+                        stopwatchTime: this.stopwatch.getFormattedTime()
+                    });
+                }
+            }
+        } catch (error) {
+            console.error('❌ Error in handleGPSPosition:', error);
+            this.addLog('Error memproses posisi GPS', 'error');
+        }
+    }
+    debugStopwatchSystem() {
+        console.group('🔍 Stopwatch System Debug');
+        console.log('Stopwatch running:', this.stopwatch.isRunning);
+        console.log('Stopwatch time:', this.stopwatch.getFormattedTime());
+        console.log('Stopwatch timestamp:', this.stopwatch.getCurrentTimestamp());
+        console.log('Total distance:', this.totalDistance);
+        console.log('Current speed:', this.currentSpeed);
+
+        if (this.realTimeProcessor && this.realTimeProcessor.distanceCalculator) {
+            const calc = this.realTimeProcessor.distanceCalculator;
+            console.log('Calculator total distance:', calc.totalDistance);
+            console.log('Calculator last position:', calc.lastPosition);
+        }
+        console.groupEnd();
+    }
+   
     updateRealTimeDisplay(data) {
         // Update speed display
         const speedElement = document.getElementById('currentSpeed');
@@ -5929,122 +6022,138 @@ triggerEnhancedSync = async () => {
         this.addLog(`Driver ${driverName} (Unit ${unitNumber}) login berhasil`, 'success');
         this.updateDriverDisplay();
     }
-    handleBackgroundPoll(position, context = {}) {
-        if (!position || !this.realTimeProcessor) return;
-        
-        // ✅ SATU DEKLARASI processedData DENGAN CONTEXT
-        const processedData = this.realTimeProcessor.processPosition(position, {
-            ...context,
-            background: true,
-            offline: !navigator.onLine,
-            source: 'background_poll'
-        });
-        
-        // ✅ VALIDASI LENGKAP
-        if (processedData && processedData.speed !== undefined && processedData.totalDistance !== undefined) {
-            // ⚡ UPDATE REAL-TIME DATA (dari kedua bagian)
-            this.currentSpeed = processedData.speed;
-            this.totalDistance = processedData.totalDistance;
-            this.lastPosition = {
-                lat: position.coords.latitude,
-                lng: position.coords.longitude,
-                accuracy: position.coords.accuracy,
-                bearing: position.coords.heading,
-                timestamp: new Date(),
-                quality: processedData.quality // ✅ dari bagian 1
-            };
+
+
+    // ===== PERBAIKAN handleBackgroundPoll =====
+handleBackgroundPoll = (position, context = {}) => {
+    if (!position || !this.realTimeProcessor) return;
+
+    console.log(`🔵 Background Poll [${new Date().toLocaleTimeString()}]:`, {
+        accuracy: position.coords.accuracy + 'm',
+        lat: position.coords.latitude.toFixed(6),
+        lng: position.coords.longitude.toFixed(6)
+    });
+
+    // ✅ PROCESS DENGAN REAL-TIME PROCESSOR YANG SUDAH TERINTEGRASI STOPWATCH
+    const processedData = this.realTimeProcessor.processPosition(position, {
+        ...context,
+        background: true,
+        offline: !navigator.onLine,
+        source: 'background_poll'
+    });
     
-            // ⚡ UPDATE UI MESKI BACKGROUND (dari bagian 2)
-            this.updateRealTimeDisplay({
-                speed: processedData.speed,
-                distance: processedData.distance,
-                totalDistance: processedData.totalDistance,
-                position: processedData.position
-            });
-    
-            // ⚡ SIMPAN KE OFFLINE QUEUE DENGAN PRIORITY (dari bagian 1)
-            const priority = processedData.quality === 'low' ? 'low' : 'high';
-            this.offlineQueue.addToQueue({
-                position: this.lastPosition,
-                speed: processedData.speed,
-                distance: processedData.totalDistance,
-                quality: processedData.quality,
-                background: true,
-                offline: !navigator.onLine,
-                calculatorData: processedData.calculatorData
-            }, priority);
-    
-            // ⚡ SIMPAN WAYPOINT (dari bagian 2)
-            this.saveWaypointFromProcessedData(processedData, position);
-            
-            // ⚡ LOGGING GABUNGAN YANG LENGKAP (dari kedua bagian)
-            console.log(`⚡ Background Poll [${new Date().toLocaleTimeString()}]:`, {
-                speed: processedData.speed.toFixed(1) + ' km/h',
-                distance: (processedData.distance * 1000).toFixed(1) + 'm', // Jarak segment
-                total: processedData.totalDistance.toFixed(3) + ' km',      // Total jarak
-                accuracy: position.coords.accuracy + 'm',
-                movement: (processedData.movement || 0).toFixed(1) + 'm',
-                lat: processedData.position.lat.toFixed(6),                 // Koordinat
-                lng: processedData.position.lng.toFixed(6),
-                quality: processedData.quality,
-                calculatorSuccess: processedData.calculatorData?.hasDistance && processedData.calculatorData?.hasSpeed
-            });
-        } else {
-            console.warn('❌ Processed data invalid or missing required fields:', processedData);
-        }
-    }
-
-    startJourney = () => {
-        if (!this.driverData) {
-            this.addLog('Silakan login terlebih dahulu', 'error');
-            return;
-        }
-
-        this.journeyStatus = 'started';
-        this.sessionStartTime = new Date();
-        this.totalDistance = 0;
-        this.dataPoints = 0;
-
-        this.resetRealTimeTracking();
-        this.startRealGPSTracking();
-        this.startDataTransmission();
-
-        this.addLog('Perjalanan dimulai', 'success');
-        this.updateJourneyDisplay();
-    }
-
-    pauseJourney = () => {
-        this.journeyStatus = 'paused';
-        this.stopRealGPSTracking();
-        
-        this.addLog('Perjalanan dijeda', 'warning');
-        this.updateJourneyDisplay();
-    }
-
-    endJourney = () => {
-        this.journeyStatus = 'ended';
-        this.stopRealGPSTracking();
-        this.stopDataTransmission();
-
-        // Schedule cleanup
-        this.cleanupManager.scheduleCleanup(this.driverData.unit, this.driverData.sessionId, 'journey_ended');
-
-        this.addLog('Perjalanan selesai', 'success');
-        this.updateJourneyDisplay();
-    }
-
-    startRealGPSTracking = () => {
-        if (this.watchId) {
-            console.warn('GPS tracking sudah berjalan');
-            return;
-        }
-
-        const options = {
-            enableHighAccuracy: true,
-            timeout: 5000,
-            maximumAge: 1000
+    if (processedData && processedData.speed !== undefined && processedData.totalDistance !== undefined) {
+        // ✅ UPDATE DATA REAL-TIME
+        this.currentSpeed = processedData.speed;
+        this.totalDistance = processedData.totalDistance;
+        this.lastPosition = {
+            lat: position.coords.latitude,
+            lng: position.coords.longitude,
+            accuracy: position.coords.accuracy,
+            bearing: position.coords.heading,
+            timestamp: new Date()
         };
 
+        // ✅ UPDATE UI MESKI BACKGROUND
+        this.updateRealTimeDisplay(processedData);
+
+        // ✅ SIMPAN WAYPOINT
+        this.saveWaypointFromProcessedData(processedData, position);
+        
+        // ✅ LOGGING DETAIL
+        console.log(`📈 Background Update:`, {
+            speed: processedData.speed.toFixed(1) + ' km/h',
+            segment: (processedData.distance * 1000).toFixed(1) + ' m',
+            total: processedData.totalDistance.toFixed(3) + ' km',
+            quality: processedData.quality,
+            stopwatch: this.stopwatch ? this.stopwatch.getFormattedTime() : 'No stopwatch'
+        });
+    } else {
+        console.warn('❌ Background processed data invalid:', processedData);
+    }
+}; // ✅ TUTUP METHOD DENGAN BENAR
+
+// ===== PERBAIKAN startJourney DENGAN STOPWATCH =====
+startJourney = () => {
+    if (!this.driverData) {
+        this.addLog('Silakan login terlebih dahulu', 'error');
+        return;
+    }
+
+    this.journeyStatus = 'started';
+    this.sessionStartTime = new Date();
+    this.totalDistance = 0;
+    this.dataPoints = 0;
+
+    // ✅ START STOPWATCH UTAMA
+    if (this.stopwatch) {
+        this.stopwatch.start();
+        console.log('⏱️ MAIN STOPWATCH STARTED for distance calculation');
+    } else {
+        console.error('❌ Stopwatch not available');
+        this.addLog('Error: Stopwatch tidak tersedia', 'error');
+        return;
+    }
+
+    this.resetRealTimeTracking();
+    this.startRealGPSTracking();
+    this.startDataTransmission();
+
+    this.addLog('Perjalanan dimulai - Stopwatch aktif', 'success');
+    this.updateJourneyDisplay();
+};
+
+// ===== PERBAIKAN pauseJourney DENGAN STOPWATCH =====
+pauseJourney = () => {
+    this.journeyStatus = 'paused';
+    this.stopRealGPSTracking();
+    
+    // ✅ PAUSE STOPWATCH
+    if (this.stopwatch) {
+        this.stopwatch.pause();
+        console.log('⏱️ Stopwatch paused');
+    }
+    
+    this.addLog('Perjalanan dijeda', 'warning');
+    this.updateJourneyDisplay();
+};
+
+// ===== PERBAIKAN endJourney DENGAN STOPWATCH =====
+endJourney = () => {
+    this.journeyStatus = 'ended';
+    this.stopRealGPSTracking();
+    this.stopDataTransmission();
+
+    // ✅ STOP STOPWATCH
+    if (this.stopwatch) {
+        this.stopwatch.stop();
+        console.log('⏱️ Stopwatch stopped');
+    }
+
+    // Schedule cleanup
+    if (this.driverData && this.cleanupManager) {
+        this.cleanupManager.scheduleCleanup(this.driverData.unit, this.driverData.sessionId, 'journey_ended');
+    }
+
+    this.addLog('Perjalanan selesai', 'success');
+    this.updateJourneyDisplay();
+};
+
+// ===== PERBAIKAN startRealGPSTracking =====
+startRealGPSTracking = () => {
+    if (this.watchId) {
+        console.warn('GPS tracking sudah berjalan');
+        return;
+    }
+
+    // ✅ OPTIONS YANG LEBIH BAIK UNTUK BACKGROUND
+    const options = {
+        enableHighAccuracy: true,
+        timeout: 10000, // ✅ PERPANJANG TIMEOUT UNTUK BACKGROUND
+        maximumAge: 2000
+    };
+
+    try {
         this.watchId = navigator.geolocation.watchPosition(
             (position) => this.handleGPSPosition(position),
             (error) => this.handleGPSError(error),
@@ -6052,172 +6161,209 @@ triggerEnhancedSync = async () => {
         );
 
         this.isTracking = true;
-        this.backgroundPoller.setActive(true);
-        console.log('📍 GPS tracking started');
-    }
-
-    stopRealGPSTracking = () => {
-        if (this.watchId) {
-            navigator.geolocation.clearWatch(this.watchId);
-            this.watchId = null;
+        if (this.backgroundPoller) {
+            this.backgroundPoller.setActive(true);
         }
-        this.isTracking = false;
+        console.log('📍 GPS tracking started');
+        
+    } catch (error) {
+        console.error('❌ Failed to start GPS tracking:', error);
+        this.addLog('Gagal memulai GPS tracking', 'error');
+    }
+};
+
+// ===== PERBAIKAN stopRealGPSTracking =====
+stopRealGPSTracking = () => {
+    if (this.watchId) {
+        navigator.geolocation.clearWatch(this.watchId);
+        this.watchId = null;
+    }
+    this.isTracking = false;
+    if (this.backgroundPoller) {
         this.backgroundPoller.setActive(false);
-        console.log('📍 GPS tracking stopped');
+    }
+    console.log('📍 GPS tracking stopped');
+};
+
+// ===== PERBAIKAN saveWaypoint =====
+saveWaypoint = (waypoint) => {
+    if (!waypoint || !this.storageManager) {
+        console.warn('❌ Cannot save waypoint: invalid data or storage manager');
+        return;
     }
 
-saveWaypoint = (waypoint) => {
+    try {
         this.storageManager.saveWaypoint(waypoint);
         this.healthMetrics.waypointSaves++;
+    } catch (error) {
+        console.error('❌ Failed to save waypoint:', error);
     }
+};
 
-    startDataTransmission = () => {
-        // Start sending real-time data to Firebase
-        this.sendInterval = setInterval(() => {
-            if (this.isOnline && this.lastPosition) {
-                this.sendRealTimeData();
-            }
-        }, 2000); // Send every 2 seconds
+// ===== PERBAIKAN startDataTransmission =====
+startDataTransmission = () => {
+    // ✅ CLEAR EXISTING INTERVALS DULU
+    this.stopDataTransmission();
 
-        // Start syncing waypoints
-        this.syncInterval = setInterval(() => {
-            if (this.isOnline) {
-                this.syncWaypointsToServer();
-            }
-        }, this.waypointConfig.syncInterval);
-
-        console.log('📡 Data transmission started');
-    }
-
-    stopDataTransmission = () => {
-        if (this.sendInterval) {
-            clearInterval(this.sendInterval);
-            this.sendInterval = null;
+    // Start sending real-time data to Firebase
+    this.sendInterval = setInterval(() => {
+        if (this.isOnline && this.lastPosition) {
+            this.sendRealTimeData();
         }
-        if (this.syncInterval) {
-            clearInterval(this.syncInterval);
-            this.syncInterval = null;
-        }
-        console.log('📡 Data transmission stopped');
-    }
+    }, 2000); // Send every 2 seconds
 
+    // Start syncing waypoints
+    this.syncInterval = setInterval(() => {
+        if (this.isOnline) {
+            this.syncWaypointsToServer();
+        }
+    }, this.waypointConfig?.syncInterval || 30000);
+
+    console.log('📡 Data transmission started');
+};
+
+// ===== PERBAIKAN stopDataTransmission =====
+stopDataTransmission = () => {
+    if (this.sendInterval) {
+        clearInterval(this.sendInterval);
+        this.sendInterval = null;
+    }
+    if (this.syncInterval) {
+        clearInterval(this.syncInterval);
+        this.syncInterval = null;
+    }
+    console.log('📡 Data transmission stopped');
+};
+
+// ===== PERBAIKAN sendRealTimeData =====
 sendRealTimeData = async () => {
-        if (!this.firebaseRef || !this.lastPosition) return;
+    if (!this.firebaseRef || !this.lastPosition) return;
 
-        try {
-            const realTimeData = this.getRealTimeData();
+    try {
+        const realTimeData = this.getRealTimeData();
+        if (realTimeData) {
             await this.firebaseRef.set(realTimeData);
             this.healthMetrics.firebaseSends++;
-        } catch (error) {
-            console.error('❌ Failed to send real-time data:', error);
-            this.addLog('Gagal mengirim data real-time', 'error');
         }
+    } catch (error) {
+        console.error('❌ Failed to send real-time data:', error);
+        this.addLog('Gagal mengirim data real-time', 'error');
     }
+};
 
-    getRealTimeData() {
-        if (!this.lastPosition) return null;
-        
-        return {
-            driver: this.driverData?.name,
-            unit: this.driverData?.unit,
-            lat: parseFloat(this.lastPosition.lat.toFixed(6)),
-            lng: parseFloat(this.lastPosition.lng.toFixed(6)),
-            speed: parseFloat(this.currentSpeed.toFixed(1)),
-            accuracy: parseFloat(this.lastPosition.accuracy.toFixed(1)),
-            bearing: this.lastPosition.bearing ? parseFloat(this.lastPosition.bearing.toFixed(0)) : null,
-            timestamp: new Date().toISOString(),
-            lastUpdate: new Date().toLocaleTimeString('id-ID'),
-            distance: parseFloat(this.totalDistance.toFixed(3)),
-            journeyStatus: this.journeyStatus,
-            batteryLevel: this.getBatteryLevel(),
-            sessionId: this.driverData?.sessionId,
-            fuel: this.calculateFuelLevel(),
-            gpsMode: 'real-time-enhanced',
-            processed: true,
-            confidence: this.lastPosition.confidence || 0.5,
-            dataQuality: 'high'
-        };
-    }
-
-    async syncWaypointsToServer() {
-        if (!this.isOnline || !this.driverData) {
-            console.log('❌ Cannot sync: Offline or no driver data');
-            return;
-        }
-
-        const unsynced = this.getUnsyncedWaypoints();
-        if (unsynced.length === 0) {
-            console.log('✅ All waypoints synced');
-            return;
-        }
-
-        console.log(`🔄 Syncing ${unsynced.length} waypoints to server...`);
-        
-        const batches = this.createBatches(unsynced, this.waypointConfig.batchSize);
-        let successfulBatches = 0;
-
-        for (const [index, batch] of batches.entries()) {
-            try {
-                // Use enhanced retry manager for batch upload
-                await this.retryManager.scheduleRetry(
-                    { batch, batchIndex: index },
-                    'high',
-                    {
-                        type: 'waypoint_upload',
-                        operation: async (data) => {
-                            await this.uploadBatch(data.batch, data.batchIndex);
-                        }
-                    }
-                );
-                
-                successfulBatches++;
-                
-                batch.forEach(waypoint => {
-                    waypoint.synced = true;
-                    this.unsyncedWaypoints.delete(waypoint.id);
-                });
-                
-                this.storageManager.markWaypointsAsSynced(batch.map(wp => wp.id));
-                this.addLog(`📡 Batch ${index + 1}/${batches.length} synced (${batch.length} waypoints)`, 'success');
-                
-            } catch (error) {
-                console.error(`❌ Batch ${index + 1} sync failed:`, error);
-                this.addLog(`❌ Batch ${index + 1} sync failed`, 'error');
-                break;
-            }
-        }
-
-        if (successfulBatches > 0) {
-            this.addLog(`✅ ${successfulBatches} batches synced successfully`, 'success');
-            this.updateWaypointDisplay();
-        }
-    }
-
-    async uploadBatch(batch, batchIndex) {
-        const batchId = `batch_${Date.now()}_${batchIndex}`;
-        const batchRef = database.ref(`/waypoints/${this.driverData.unit}/batches/${batchId}`);
-        
-        const batchData = {
-            batchId: batchId,
-            unit: this.driverData.unit,
-            sessionId: this.driverData.sessionId,
-            driver: this.driverData.name,
-            waypoints: batch,
-            uploadedAt: new Date().toISOString(),
-            batchSize: batch.length,
-            batchIndex: batchIndex
-        };
-
-        await batchRef.set(batchData);
-    }
+// ===== PERBAIKAN getRealTimeData =====
+getRealTimeData = () => {
+    if (!this.lastPosition) return null;
     
+    return {
+        driver: this.driverData?.name,
+        unit: this.driverData?.unit,
+        lat: parseFloat(this.lastPosition.lat.toFixed(6)),
+        lng: parseFloat(this.lastPosition.lng.toFixed(6)),
+        speed: parseFloat(this.currentSpeed.toFixed(1)),
+        accuracy: parseFloat(this.lastPosition.accuracy.toFixed(1)),
+        bearing: this.lastPosition.bearing ? parseFloat(this.lastPosition.bearing.toFixed(0)) : null,
+        timestamp: new Date().toISOString(),
+        lastUpdate: new Date().toLocaleTimeString('id-ID'),
+        distance: parseFloat(this.totalDistance.toFixed(3)),
+        journeyStatus: this.journeyStatus,
+        batteryLevel: this.getBatteryLevel(),
+        sessionId: this.driverData?.sessionId,
+        fuel: this.calculateFuelLevel(),
+        gpsMode: 'real-time-enhanced',
+        processed: true,
+        confidence: this.lastPosition.confidence || 0.5,
+        dataQuality: 'high',
+        stopwatchTime: this.stopwatch ? this.stopwatch.getFormattedTime() : null // ✅ TAMBAHKAN STOPWATCH TIME
+    };
+};
+
+// ===== PERBAIKAN syncWaypointsToServer =====
+syncWaypointsToServer = async () => {
+    if (!this.isOnline || !this.driverData) {
+        console.log('❌ Cannot sync: Offline or no driver data');
+        return;
+    }
+
+    const unsynced = this.getUnsyncedWaypoints();
+    if (unsynced.length === 0) {
+        console.log('✅ All waypoints synced');
+        return;
+    }
+
+    console.log(`🔄 Syncing ${unsynced.length} waypoints to server...`);
+    
+    const batches = this.createBatches(unsynced, this.waypointConfig?.batchSize || 100);
+    let successfulBatches = 0;
+
+    for (const [index, batch] of batches.entries()) {
+        try {
+            // Use enhanced retry manager for batch upload
+            await this.retryManager.scheduleRetry(
+                { batch, batchIndex: index },
+                'high',
+                {
+                    type: 'waypoint_upload',
+                    operation: async (data) => {
+                        await this.uploadBatch(data.batch, data.batchIndex);
+                    }
+                }
+            );
+            
+            successfulBatches++;
+            
+            batch.forEach(waypoint => {
+                waypoint.synced = true;
+                this.unsyncedWaypoints.delete(waypoint.id);
+            });
+            
+            this.storageManager.markWaypointsAsSynced(batch.map(wp => wp.id));
+            this.addLog(`📡 Batch ${index + 1}/${batches.length} synced (${batch.length} waypoints)`, 'success');
+            
+        } catch (error) {
+            console.error(`❌ Batch ${index + 1} sync failed:`, error);
+            this.addLog(`❌ Batch ${index + 1} sync failed`, 'error');
+            break;
+        }
+    }
+
+    if (successfulBatches > 0) {
+        this.addLog(`✅ ${successfulBatches} batches synced successfully`, 'success');
+        this.updateWaypointDisplay();
+    }
+};
+
+// ===== PERBAIKAN uploadBatch =====
+uploadBatch = async (batch, batchIndex) => {
+    if (!this.driverData || !batch || batch.length === 0) {
+        throw new Error('Invalid batch data for upload');
+    }
+
+    const batchId = `batch_${Date.now()}_${batchIndex}`;
+    const batchRef = database.ref(`/waypoints/${this.driverData.unit}/batches/${batchId}`);
+    
+    const batchData = {
+        batchId: batchId,
+        unit: this.driverData.unit,
+        sessionId: this.driverData.sessionId,
+        driver: this.driverData.name,
+        waypoints: batch,
+        uploadedAt: new Date().toISOString(),
+        batchSize: batch.length,
+        batchIndex: batchIndex,
+        stopwatchTime: this.stopwatch ? this.stopwatch.getFormattedTime() : null // ✅ TAMBAHKAN STOPWATCH TIME
+    };
+
+    await batchRef.set(batchData);
+    console.log(`✅ Batch ${batchIndex} uploaded successfully (${batch.length} waypoints)`);
+};
     // === IMPLEMENTASI METHOD-METHOD TAMBAHAN ===
 
     getUnsyncedWaypoints() {
         return this.storageManager.loadUnsyncedWaypoints();
     }
 
-    createBatches(array, batchSize) {
+    createBatches = (array, batchSize) => {
         const batches = [];
         for (let i = 0; i < array.length; i += batchSize) {
             batches.push(array.slice(i, i + batchSize));
@@ -6492,7 +6638,7 @@ sendRealTimeData = async () => {
         };
     }
 
-    recoverFromBackground() {
+    recoverFromBackground= () => {
         console.log('🔄 Recovering from background state...');
         
         // Reset components that might have stale state
@@ -6515,7 +6661,7 @@ sendRealTimeData = async () => {
 
     // === IMPLEMENTASI METHOD CHAT ===
 
-    toggleChat() {
+    toggleChat= () => {
         this.isChatOpen = !this.isChatOpen;
         const chatPanel = document.getElementById('chatPanel');
         
@@ -6530,7 +6676,7 @@ sendRealTimeData = async () => {
         }
     }
 
-    initializeChat() {
+    initializeChat= () => {
         if (this.chatInitialized || !this.chatRef) return;
 
         this.chatRef.on('child_added', (snapshot) => {
@@ -6542,7 +6688,7 @@ sendRealTimeData = async () => {
         console.log('💬 Chat system initialized');
     }
 
-    displayChatMessage(message) {
+    displayChatMessage=(message) => {
         const chatMessages = document.getElementById('chatMessages');
         if (!chatMessages) return;
 
@@ -6564,7 +6710,7 @@ sendRealTimeData = async () => {
         }
     }
 
-    updateChatBadge() {
+    updateChatBadge= () => {
         const chatBadge = document.getElementById('chatBadge');
         if (chatBadge) {
             chatBadge.textContent = this.unreadCount > 0 ? this.unreadCount.toString() : '';
@@ -6572,7 +6718,7 @@ sendRealTimeData = async () => {
         }
     }
 
-    async sendChatMessage() {
+    sendChatMessage = async () => {
         const chatInput = document.getElementById('chatInput');
         if (!chatInput || !chatInput.value.trim() || !this.chatRef) return;
 
@@ -6599,7 +6745,7 @@ sendRealTimeData = async () => {
         }
     }
 
-    loadChatMessages() {
+    loadChatMessages= () => {
         // Clear unread count when opening chat
         this.unreadCount = 0;
         this.updateChatBadge();
@@ -6607,7 +6753,7 @@ sendRealTimeData = async () => {
 
     // === IMPLEMENTASI METHOD TAMBAHAN ===
 
-    reportIssue() {
+    reportIssue= () => {
         const issue = prompt('Deskripsikan masalah yang ditemukan:');
         if (issue) {
             this.addLog(`Laporan masalah: ${issue}`, 'warning');
@@ -6615,7 +6761,7 @@ sendRealTimeData = async () => {
         }
     }
 
-    logout() {
+    logout= () => {
         // Stop all activities
         this.stopRealGPSTracking();
         this.stopDataTransmission();
@@ -6640,12 +6786,12 @@ sendRealTimeData = async () => {
         this.addLog('Logout berhasil', 'success');
     }
 
-    refreshData() {
+    refreshData= () => {
         this.updateAllDisplays();
         this.addLog('Data diperbarui', 'info');
     }
 
-    clearLogs() {
+    clearLogs= () => {
         const logElement = document.getElementById('systemLog');
         if (logElement) {
             logElement.innerHTML = '';
@@ -6653,22 +6799,22 @@ sendRealTimeData = async () => {
         this.addLog('Logs dibersihkan', 'info');
     }
 
-    exportData() {
+    exportData= () => {
         this.storageManager.exportData();
         this.addLog('Data diekspor', 'success');
     }
 
-    showSettings() {
+    showSettings= () => {
         alert('Settings panel akan ditampilkan di sini');
         // Implementation for settings dialog
     }
 
-    showMaintenance() {
+    showMaintenance= () => {
         alert('Maintenance panel akan ditampilkan di sini');
         // Implementation for maintenance operations
     }
 
-    emergencyStop() {
+    emergencyStop= () => {
         this.stopRealGPSTracking();
         this.stopDataTransmission();
         this.journeyStatus = 'ended';
@@ -6677,22 +6823,22 @@ sendRealTimeData = async () => {
         this.updateJourneyDisplay();
     }
 
-    forceSync() {
+    forceSync= () => {
         this.syncManager.forceSync();
         this.addLog('Sinkronisasi paksa dimulai', 'info');
     }
 
-    handleResize() {
+    handleResize= () => {
         // Handle window resize if needed
         console.log('Window resized');
     }
 
-    handleOrientationChange() {
+    handleOrientationChange= () => {
         // Handle orientation change if needed
         console.log('Orientation changed');
     }
 
-    printDiagnostics() {
+    printDiagnostics= () => {
         console.group('🚀 GPS Logger Diagnostics');
         console.log('Driver Data:', this.driverData);
         console.log('Journey Status:', this.journeyStatus);
