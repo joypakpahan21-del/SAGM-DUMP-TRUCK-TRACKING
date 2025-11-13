@@ -26,6 +26,7 @@ class AdvancedSAGMGpsTracking {
         this.unitSessions = new Map();
         this.driverOnlineStatus = new Map();
         this.lastDataTimestamps = new Map();
+        this.selectedUnit = null;
         
         // 🎯 ANALYTICS SYSTEMS
         this.analyticsEngine = new AnalyticsEngine(this);
@@ -90,7 +91,7 @@ class AdvancedSAGMGpsTracking {
         this.showRoutes = true;
         this.routeColors = new Map();
         this.routeControls = null;
-        this.maxRoutePoints = 200;
+        this.maxRoutePoints = Infinity;
         
         // Data Logger System
         this.dataLogger = {
@@ -118,13 +119,13 @@ class AdvancedSAGMGpsTracking {
             baseFuelConsumption: 0.25,
             movingFuelConsumption: 0.22,
             idleFuelConsumptionPerMin: 0.013,
-            dailyDistanceTarget: 100,
+            dailyDistanceTarget: 1000,
             maxIdleTime: 30, // minutes
             maintenanceIntervals: {
-                oilChange: 5000,
-                tireRotation: 10000,
-                brakeService: 15000,
-                majorService: 20000
+                oilChange: 2500,
+                tireRotation: 1000,
+                brakeService: 8000,
+                majorService: 10000
             }
         };
 
@@ -575,6 +576,11 @@ updateDriverData(driverData) {
                 }
             });
             this.firebaseListeners.set('connection', connectionListener);
+            this.firebaseListener = database.ref('/units').on('value', snapshot => {
+                snapshot.forEach(unitSnapshot => {
+                    this.updateUnitPolyline(unitName);
+        });
+    });
 
             // ✅ FIX: Improved units listener dengan better error handling
             const unitsListener = database.ref('/units').on('value', 
@@ -630,12 +636,68 @@ updateDriverData(driverData) {
             this.firebaseListeners.set('removal', removalListener);
 
             console.log('✅ Firebase listeners setup completed');
+            this.firebaseListener = database.ref('/units').on('value', snapshot => {
+                snapshot.forEach(unitSnapshot => {
+                    const unitData = unitSnapshot.val();
+                    const unitName = unitSnapshot.key;
+
+                    if (unitData.latitude && unitData.longitude) {
+                        // Initialize history if not exists
+                        if (!this.unitHistory.has(unitName)) {
+                            this.unitHistory.set(unitName, []);
+                        }
+
+                        const history = this.unitHistory.get(unitName);
+                        const newPoint = {
+                            latitude: unitData.latitude,
+                            longitude: unitData.longitude,
+                            timestamp: unitData.timestamp
+                        };
+
+                        if (history.length === 0 || 
+                            this.calculateDistance(
+                                newPoint.latitude, newPoint.longitude,
+                                history[history.length-1].latitude, history[history.length-1].longitude
+                            ) > 0.01) { // ~10 meters
+                            history.push(newPoint);
+                        }
+
+                        if (history.length > this.maxRoutePoints) {
+                            // Keep more recent points (last 75%) and thin out older points
+                            const keepCount = Math.floor(this.maxRoutePoints * 0.75);
+                            const removeCount = history.length - keepCount;
+                            const thinnedHistory = history
+                                .slice(0, removeCount)
+                                .filter((_, i) => i % 3 === 0) // Keep every 3rd point
+                                .concat(history.slice(removeCount));
+                            
+                            this.unitHistory.set(unitName, thinnedHistory);
+                        }
+                        
+                        this.updateUnitPolyline(unitName);
+                    }
+                });
+            });
+
+            calculateDistance = (lat1, lng1, lat2, lng2) => {
+                
+                const R = 6371; // Earth's radius in km
+                const dLat = (lat2 - lat1) * Math.PI / 180;
+                const dLng = (lng2 - lng1) * Math.PI / 180;
+                const a = 
+                    Math.sin(dLat/2) * Math.sin(dLat/2) +
+                    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * 
+                    Math.sin(dLng/2) * Math.sin(dLng/2);
+                const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+                return R * c;
+            }
             
         } catch (error) {
             console.error('🔥 Critical Firebase error:', error);
             this.logData('Critical Firebase connection error', 'error', { 
                 error: error.message,
                 stack: error.stack
+                
             });
             
             // Retry connection after delay
@@ -643,6 +705,8 @@ updateDriverData(driverData) {
                 console.log('🔄 Retrying Firebase connection after error...');
                 this.connectToFirebase();
             }, 10000);
+
+
         }
     }
 
@@ -1156,10 +1220,6 @@ updateDriverData(driverData) {
 
         history.push(point);
 
-        if (history.length > this.maxRoutePoints) {
-            this.unitHistory.set(unit.name, history.slice(-this.maxRoutePoints));
-        }
-
         this.updateUnitRoute(unit);
     }
 
@@ -1239,7 +1299,54 @@ updateDriverData(driverData) {
         }
         return this.routeColors.get(unitName);
     }
-
+    updateUnitPolyline(unitName) {
+        if (!this.showRoutes || !this.map) return;
+        
+        const history = this.unitHistory.get(unitName) || [];
+        if (history.length < 2) return;
+    
+        // Create smoother polyline with better styling
+        if (!this.unitPolylines.has(unitName)) {
+            const polyline = L.polyline([], {
+                color: this.getRouteColor(unitName),
+                weight: 5,
+                opacity: 0.8,
+                lineJoin: 'round',
+                dashArray: null,
+                smoothFactor: 1.0
+            }).addTo(this.map);
+            this.unitPolylines.set(unitName, polyline);
+        }
+        
+        const polyline = this.unitPolylines.get(unitName);
+        polyline.setLatLngs(history.map(p => [p.latitude, p.longitude]));
+        polyline.setStyle({
+            color: this.getRouteColor(unitName),
+            weight: unitName === this.selectedUnit ? 7 : 5  // Thicker line for selected unit
+        });
+    }
+    
+    // Add this method to generate consistent route colors
+    getRouteColor(unitName) {
+        // Generate a consistent color based on unit name
+        const colors = [
+            '#4285F4', // Google Blue
+            '#EA4335', // Google Red
+            '#FBBC05', // Google Yellow
+            '#34A853', // Google Green
+            '#673AB7', // Deep Purple
+            '#FF5722', // Deep Orange
+            '#009688', // Teal
+            '#795548'  // Brown
+        ];
+        
+        // Simple hash to get consistent color for each unit
+        let hash = 0;
+        for (let i = 0; i < unitName.length; i++) {
+            hash = unitName.charCodeAt(i) + ((hash << 5) - hash);
+        }
+        return colors[Math.abs(hash) % colors.length];
+    }
     // ===== MAP MARKERS METHODS =====
     updateMapMarkers() {
         this.markers.forEach((marker, unitName) => {
