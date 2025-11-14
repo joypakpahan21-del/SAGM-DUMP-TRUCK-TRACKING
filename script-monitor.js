@@ -872,7 +872,7 @@ updateDriverData(driverData) {
                     this.syncOfflineData();
                 }
             });
-            his.backgroundSyncInterval = setInterval(() => {
+            this.backgroundSyncInterval = setInterval(() => {
                 if (this.isOnline && this.offlineQueue.size > 0) {
                     this.syncOfflineData();
                 }
@@ -5198,3 +5198,4 @@ function sendChatMessage() {
         window.gpsSystem.sendChatMessage();
     }
 }
+
