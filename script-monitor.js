@@ -40,6 +40,7 @@ class AdvancedSAGMGpsTracking {
         this.lastDataTimestamps = new Map();
         this.selectedUnit = null;
         
+        
         // 🎯 ANALYTICS SYSTEMS
         this.analyticsEngine = new AnalyticsEngine(this);
         this.geofencingManager = new GeofencingManager(this);
@@ -50,6 +51,13 @@ class AdvancedSAGMGpsTracking {
         this.maintenancePredictor = new MaintenancePredictor(this);
         this.reportGenerator = new ReportGenerator(this);
         this.notificationSystem = new NotificationSystem(this);
+        this.offlineQueue = new Map();
+        this.isOnline = true;
+        this.backgroundSyncInterval = null;
+        this.serviceWorkerRegistration = null;
+        this.serviceWorkerReady = false;
+        this.setupServiceWorker();
+
         
         // 🧹 ENHANCED CLEANUP SYSTEM
         this.cleanupCallbacks = [];
@@ -228,6 +236,25 @@ class AdvancedSAGMGpsTracking {
             });
         }
     }
+
+
+    initializeServiceWorkerCommunication() {
+        console.log('🔄 Initializing Service Worker communication...');
+        
+        // Request offline positions saat startup
+        this.loadOfflinePositions();
+        
+        // Setup periodic health checks
+        setInterval(() => {
+            this.checkServiceWorkerHealth();
+        }, 60000);
+        
+        // Setup sync status monitoring
+        setInterval(() => {
+            this.getSyncStatus();
+        }, 30000);
+    }
+
     
 
     // ===== ENHANCED CHAT SYSTEM METHODS =====
@@ -275,6 +302,271 @@ class AdvancedSAGMGpsTracking {
     }
 
     // ✅ PERBAIKI: Method untuk kirim pesan dari monitor ke driver
+    async setupServiceWorker() {
+        if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
+            this.serviceWorkerReady = true;
+            console.log('✅ Service Worker controller ready');
+            
+            // Request offline positions saat system startup
+            setTimeout(() => {
+                this.loadOfflineData();
+            }, 3000);
+        } else {
+            console.log('⏳ Waiting for Service Worker...');
+            // Coba lagi dalam 2 detik
+            setTimeout(() => this.setupServiceWorker(), 2000);
+        }
+    } 
+    
+    async loadOfflineData() {
+        if (!this.serviceWorkerReady) return;
+        
+        try {
+            const positions = await this.getOfflinePositionsFromSW();
+            this.processOfflinePositions(positions);
+        } catch (error) {
+            console.error('❌ Failed to load offline data:', error);
+        }
+    }
+
+
+
+    // 🆕 METHOD UNTUK HANDLE MESSAGE DARI SERVICE WORKER
+    handleServiceWorkerMessage(event) {
+        const { type, data } = event.data;
+    console.log('📩 Message from Service Worker:', type);
+    
+    switch (type) {
+        case 'SYNC_COMPLETED':
+            this.handleSyncCompleted(data);
+            break;
+            
+        case 'SYNC_FAILED':
+            this.handleSyncFailed(data);
+            break;
+            
+        case 'DATA_CACHED':
+            this.handleDataCached(data);
+            break;
+            
+        case 'HEALTH_CHECK':
+            this.handleHealthCheck(data);
+            break;
+            
+        case 'EMERGENCY_BACKUP_CREATED':
+            this.logData('Emergency backup created', 'system', data);
+            break;
+            
+        default:
+            console.log('📩 Unknown message type from SW:', type);
+        }
+    }
+
+    handleSyncCompleted(data) {
+        this.logData(`Background sync completed: ${data.successCount} successful, ${data.failCount} failed`, 'system', data);
+        
+        // Update UI dengan sync status
+        this.updateSyncStatusIndicator({
+            status: 'completed',
+            successCount: data.successCount,
+            failCount: data.failCount,
+            lastSync: new Date().toISOString()
+        });
+    }
+    
+    // 🆕 HANDLE SYNC FAILED
+    handleSyncFailed(data) {
+        this.logData('Background sync failed', 'error', data);
+        
+        this.updateSyncStatusIndicator({
+            status: 'failed',
+            error: data.error,
+            lastAttempt: new Date().toISOString()
+        });
+    }
+    
+    // 🆕 CHECK SERVICE WORKER HEALTH
+    async checkServiceWorkerHealth() {
+        try {
+            const healthStatus = await this.sendMessageToSW('GET_SYNC_STATUS', {});
+            console.log('🔍 Service Worker Health:', healthStatus);
+            
+            // Update health indicator di UI
+            this.updateHealthIndicator(healthStatus);
+            
+        } catch (error) {
+            console.warn('⚠️ Service Worker health check failed:', error);
+            this.updateHealthIndicator({ status: 'unavailable', error: error.message });
+        }
+    }
+    async getSyncStatus() {
+        try {
+            const response = await this.sendMessageToSW('GET_SYNC_STATUS', {});
+            return response.data;
+        } catch (error) {
+            console.warn('⚠️ Failed to get sync status:', error);
+            return { error: error.message };
+        }
+    }
+    updateOfflineDataIndicator() {
+        const indicator = document.getElementById('offlineDataIndicator');
+        if (!indicator) return;
+        
+        if (this.offlinePositionsLoaded) {
+            const offlineCount = Array.from(this.unitHistory.values())
+                .reduce((total, history) => total + history.filter(point => point.isOffline).length, 0);
+                
+            indicator.innerHTML = `💾 ${offlineCount} Offline Positions`;
+            indicator.className = 'badge bg-success';
+        } else {
+            indicator.innerHTML = '⏳ Loading Offline Data...';
+            indicator.className = 'badge bg-warning';
+        }
+    }
+    updateSyncStatusIndicator(status) {
+        const indicator = document.getElementById('syncStatusIndicator');
+        if (!indicator) return;
+        
+        switch (status.status) {
+            case 'completed':
+                indicator.innerHTML = `✅ Sync: ${status.successCount} items`;
+                indicator.className = 'badge bg-success';
+                break;
+            case 'failed':
+                indicator.innerHTML = '❌ Sync Failed';
+                indicator.className = 'badge bg-danger';
+                break;
+            case 'syncing':
+                indicator.innerHTML = '🔄 Syncing...';
+                indicator.className = 'badge bg-warning';
+                break;
+            default:
+                indicator.innerHTML = '📡 Sync Unknown';
+                indicator.className = 'badge bg-secondary';
+        }
+    }
+
+    // 🆕 METHOD UNTUK REQUEST OFFLINE POSITIONS DARI SERVICE WORKER
+    async getOfflinePositionsFromSW() {
+        return new Promise((resolve, reject) => {
+            if (!navigator.serviceWorker.controller) {
+                reject(new Error('Service Worker not available'));
+                return;
+            }
+
+            const messageChannel = new MessageChannel();
+            
+            messageChannel.port1.onmessage = (event) => {
+                if (event.data.type === 'OFFLINE_POSITIONS_RESPONSE') {
+                    resolve(event.data.data);
+                } else if (event.data.type === 'ERROR_RESPONSE') {
+                    reject(new Error(event.data.data.error));
+                }
+            };
+
+            navigator.serviceWorker.controller.postMessage({
+                type: 'GET_OFFLINE_POSITIONS'
+            }, [messageChannel.port2]);
+        });
+    }
+
+    // 🆕 METHOD UNTUK PROSES OFFLINE POSITIONS
+    processOfflinePositions(positions) {
+        if (!positions || positions.length === 0) {
+            console.log('📭 No offline positions found');
+            return;
+        }
+
+        console.log(`🔄 Processing ${positions.length} offline positions`);
+        
+        // Group positions by unit
+        const positionsByUnit = {};
+        positions.forEach(position => {
+            if (!positionsByUnit[position.unitName]) {
+                positionsByUnit[position.unitName] = [];
+            }
+            positionsByUnit[position.unitName].push(position);
+        });
+
+        // Process each unit's offline positions
+        Object.keys(positionsByUnit).forEach(unitName => {
+            const unitPositions = positionsByUnit[unitName];
+            this.addOfflinePositionsToUnit(unitName, unitPositions);
+        });
+
+        this.logData(`Processed ${positions.length} offline positions for ${Object.keys(positionsByUnit).length} units`, 'gps');
+    }
+    addOfflinePositionsToUnit(unitName, positions) {
+        if (!this.unitHistory.has(unitName)) {
+            this.unitHistory.set(unitName, []);
+        }
+
+        const history = this.unitHistory.get(unitName);
+        
+        positions.forEach(position => {
+            const exists = history.some(point => 
+                point.timestamp === position.timestamp &&
+                point.latitude === position.lat &&
+                point.longitude === position.lng
+            );
+
+            if (!exists) {
+                history.push({
+                    latitude: position.lat,
+                    longitude: position.lng,
+                    timestamp: position.timestamp,
+                    speed: position.speed || 0,
+                    isOffline: true
+                });
+            }
+        });
+
+        // Sort by timestamp
+        history.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+        
+        // Update polyline
+        this.updateUnitPolyline(unitName);
+        
+        console.log(`📍 Added ${positions.length} offline positions to ${unitName}`);
+    }
+    async sendMessageToSW(type, data) {
+        return new Promise((resolve, reject) => {
+            if (!navigator.serviceWorker.controller) {
+                reject(new Error('Service Worker controller not available'));
+                return;
+            }
+    
+            const messageChannel = new MessageChannel();
+            
+            messageChannel.port1.onmessage = (event) => {
+                if (event.data.type === 'ERROR_RESPONSE') {
+                    reject(new Error(event.data.data.error));
+                } else {
+                    resolve(event.data);
+                }
+            };
+    
+            // Timeout setelah 5 detik
+            const timeoutId = setTimeout(() => {
+                reject(new Error('Service Worker response timeout'));
+            }, 5000);
+    
+            messageChannel.port1.onmessage = (event) => {
+                clearTimeout(timeoutId);
+                if (event.data.type === 'ERROR_RESPONSE') {
+                    reject(new Error(event.data.data.error));
+                } else {
+                    resolve(event.data);
+                }
+            };
+    
+            navigator.serviceWorker.controller.postMessage({
+                type: type,
+                data: data
+            }, [messageChannel.port2]);
+        });
+    }
+
     async sendMonitorMessage() {
         const messageInput = document.getElementById('monitorChatInput');
         const messageText = messageInput?.value.trim();
@@ -574,6 +866,17 @@ updateDriverData(driverData) {
             console.log('🟡 Connecting to Firebase...');
             
             this.cleanupFirebaseListeners();
+            database.ref('.info/connected').on('value', (snapshot) => {
+                this.isOnline = snapshot.val();
+                if (this.isOnline) {
+                    this.syncOfflineData();
+                }
+            });
+            his.backgroundSyncInterval = setInterval(() => {
+                if (this.isOnline && this.offlineQueue.size > 0) {
+                    this.syncOfflineData();
+                }
+            }, 1000);
 
             const connectionListener = database.ref('.info/connected').on('value', (snapshot) => {
                 const connected = snapshot.val();
@@ -787,6 +1090,31 @@ updateDriverData(driverData) {
         this.updateStatistics();
         this.updateAnalyticsDashboard();
         this.scheduleRender();
+    }
+
+    async cacheRealTimeDataToSW(unitName, unitData) {
+        if (!this.serviceWorkerReady) return;
+    
+        const gpsData = {
+            unit: unitName,
+            name: unitName,
+            lat: parseFloat(unitData.lat),
+            lng: parseFloat(unitData.lng),
+            speed: parseFloat(unitData.speed) || 0,
+            accuracy: parseFloat(unitData.accuracy) || 0,
+            sessionId: unitData.sessionId,
+            timestamp: new Date().toISOString(),
+            driver: unitData.driver || 'Unknown',
+            distance: parseFloat(unitData.distance) || 0,
+            journeyStatus: unitData.journeyStatus || 'active',
+            batteryLevel: unitData.batteryLevel || null
+        };
+    
+        try {
+            await this.sendMessageToSW('CACHE_GPS_DATA', gpsData);
+        } catch (error) {
+            console.warn('⚠️ Failed to cache GPS data to Service Worker:', error);
+        }
     }
 
     // ===== ENHANCED UNIT CREATION WITH ANALYTICS =====
@@ -1312,6 +1640,21 @@ updateDriverData(driverData) {
         return this.routeColors.get(unitName);
     }
     updateUnitPolyline(unitName) {
+        
+        const offlineData = localStorage.getItem(`offline_${unitName}`);
+        if (offlineData) {
+            const positions = JSON.parse(offlineData);
+            positions.forEach(pos => {
+                this.addHistoryPoint({
+                    name: unitName,
+                    latitude: pos.lat,
+                    longitude: pos.lng,
+                    timestamp: pos.timestamp
+                });
+            });
+        
+        }
+        this.loadOfflinePositionsForUnit(unitName);
         if (!this.showRoutes || !this.map) return;
         
         const history = this.unitHistory.get(unitName) || [];
@@ -1336,6 +1679,46 @@ updateDriverData(driverData) {
             color: this.getRouteColor(unitName),
             weight: unitName === this.selectedUnit ? 7 : 5  // Thicker line for selected unit
         });
+    }
+    async loadOfflinePositionsForUnit(unitName) {
+        try {
+            const offlinePositions = await this.getOfflinePositionsFromSW();
+            const unitOfflinePositions = offlinePositions.filter(pos => pos.unitName === unitName);
+            
+            if (unitOfflinePositions.length > 0) {
+                console.log(`📍 Loaded ${unitOfflinePositions.length} offline positions for ${unitName}`);
+                
+                if (!this.unitHistory.has(unitName)) {
+                    this.unitHistory.set(unitName, []);
+                }
+                
+                const history = this.unitHistory.get(unitName);
+                
+                // Tambahkan posisi offline ke history (hindari duplikat)
+                unitOfflinePositions.forEach(offlinePos => {
+                    const exists = history.some(pos => 
+                        pos.timestamp === offlinePos.timestamp && 
+                        pos.latitude === offlinePos.lat && 
+                        pos.longitude === offlinePos.lng
+                    );
+                    
+                    if (!exists) {
+                        history.push({
+                            latitude: offlinePos.lat,
+                            longitude: offlinePos.lng,
+                            timestamp: offlinePos.timestamp,
+                            speed: offlinePos.speed || 0,
+                            isOffline: true
+                        });
+                    }
+                });
+                
+                // Sort history by timestamp
+                history.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+            }
+        } catch (error) {
+            console.error(`❌ Failed to load offline positions for ${unitName}:`, error);
+        }
     }
     
     // Add this method to generate consistent route colors
@@ -2806,6 +3189,41 @@ updateDriverData(driverData) {
         
         console.log('✅ Advanced system cleanup completed');
     }
+    addToOfflineQueue(unitName, positionData) {
+        if (!this.offlineQueue.has(unitName)) {
+            this.offlineQueue.set(unitName, []);
+        }
+        this.offlineQueue.get(unitName).push(positionData);
+        
+        // Store in localStorage for persistence
+        localStorage.setItem(`offline_${unitName}`, JSON.stringify(this.offlineQueue.get(unitName)));
+    }
+
+    syncOfflineData() {
+        this.offlineQueue.forEach((positions, unitName) => {
+            if (positions.length > 0) {
+                const ref = database.ref(`/units/${unitName}`);
+                positions.forEach(pos => {
+                    ref.update(pos).then(() => {
+                        // Remove from queue after successful sync
+                        this.offlineQueue.set(unitName, this.offlineQueue.get(unitName).filter(p => p !== pos));
+                    });
+                });
+            }
+        });
+        this.offlineQueue.forEach((_, unitName) => {
+            localStorage.removeItem(`offline_${unitName}`);
+        });
+    }
+
+
+
+
+
+
+
+
+
 }
 
 // ==== ANALYTICS ENGINE ====
@@ -3500,12 +3918,25 @@ class AnalyticsEngine {
 
     // ✅ FIX: Perbaiki method cleanup
     cleanup() {
-        if (this.analyticsInterval) {
-            clearInterval(this.analyticsInterval);
-            this.analyticsInterval = null;
+        console.log('🧹 Comprehensive system cleanup with analytics support...');
+        
+        // Cleanup Service Worker
+        if (this.serviceWorkerRegistration) {
+            // Kirim pesan cleanup ke Service Worker
+            this.sendMessageToSW('LOGOUT_CLEANUP', {})
+                .then(() => {
+                    console.log('✅ Service Worker cleanup completed');
+                })
+                .catch(error => {
+                    console.error('❌ Service Worker cleanup failed:', error);
+                })
+                .finally(() => {
+                    // Unregister Service Worker
+                    this.serviceWorkerRegistration.unregister().then(() => {
+                        console.log('✅ Service Worker unregistered');
+                    });
+                });
         }
-        this.clearAll();
-        console.log('🧹 Analytics Engine cleaned up');
     }
 }
 
