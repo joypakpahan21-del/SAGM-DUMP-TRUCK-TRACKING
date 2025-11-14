@@ -825,6 +825,11 @@
 
     <!-- Notification Container -->
     <div id="notificationContainer" class="position-fixed top-0 end-0 p-3" style="z-index: 9999;"></div>
+    <div class="offline-status-indicators">
+        <span id="offlineDataIndicator" class="badge bg-warning">⏳ Loading Offline Data</span>
+        <span id="syncStatusIndicator" class="badge bg-secondary">📡 Sync Unknown</span>
+        <span id="healthIndicator" class="badge bg-info">🔍 Checking Health...</span>
+    </div>
 
     <!-- JavaScript Libraries -->
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -832,6 +837,42 @@
     
     <!-- External JavaScript -->
     <script src="script-monitor.js"></script>
+    <script>
+        // ✅ SERVICE WORKER REGISTRATION - TAMBAHKAN DI monitor.html
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', function() {
+                // Pastikan path ke service-worker.js benar
+                navigator.serviceWorker.register('/service-worker.js')
+                    .then(function(registration) {
+                        console.log('✅ ServiceWorker registered successfully with scope:', registration.scope);
+                        
+                        // Kirim pesan ke Service Worker bahwa ini adalah context monitor
+                        if (registration.active) {
+                            registration.active.postMessage({
+                                type: 'CONTEXT_IDENTIFICATION',
+                                context: 'monitor'
+                            });
+                        }
+                    })
+                    .catch(function(error) {
+                        console.log('❌ ServiceWorker registration failed:', error);
+                    });
+            });
+
+            // Listen for messages from Service Worker
+            navigator.serviceWorker.addEventListener('message', event => {
+                const { type, data } = event.data;
+                console.log('📩 Message from Service Worker:', type);
+                
+                // Handle offline positions data jika ada
+                if (type === 'OFFLINE_POSITIONS_READY' && window.gpsSystem) {
+                    window.gpsSystem.processOfflinePositions(data);
+                }
+            });
+        } else {
+            console.log('❌ Service Worker not supported in this browser');
+        }
+    </script>
     
     <!-- ✅ ENHANCED GLOBAL FUNCTIONS - REAL FIREBASE CHAT INTEGRATION -->
     <script>
