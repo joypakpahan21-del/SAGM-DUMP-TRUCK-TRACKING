@@ -607,6 +607,19 @@
     <!-- FIREBASE SDK -->
     <script src="https://www.gstatic.com/firebasejs/9.6.0/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.6.0/firebase-database-compat.js"></script>
+    <script>
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('/service-worker.js')
+                .then(registration => {
+                    console.log('SW registered for mobile');
+                    // Identify as mobile context
+                    registration.active?.postMessage({
+                        type: 'CONTEXT_IDENTIFICATION', 
+                        context: 'mobile'
+                    });
+                });
+        }
+    </script>
 
     <script>
 // ==== FIREBASE CONFIG ====
