@@ -211,18 +211,17 @@ class HaversineDistanceSpeedCalculator {
         if (!currentPosition || !currentPosition.lat || !currentPosition.lng) {
             return { distance: 0, speed: 0, totalDistance: this.totalDistance };
         }
-
+    
         const now = this.getTimestampFn();
         const currentPoint = {
             lat: currentPosition.lat,
             lng: currentPosition.lng,
             timestamp: now
         };
-
+    
         let distance = 0;
         let speed = 0;
-        
-
+    
         // Jika ada posisi sebelumnya, hitung jarak dan kecepatan
         if (this.lastPosition) {
             // 1. HITUNG JARAK dengan Haversine
@@ -232,7 +231,7 @@ class HaversineDistanceSpeedCalculator {
             );
             const timeDiffMs = currentPoint.timestamp - this.lastPosition.timestamp;
             const timeDiffHours = timeDiffMs / 1000 / 3600;
-
+    
             if (timeDiffHours > 0.0000278) { // ~0.1 detik
                 speed = distance / timeDiffHours;
                 speed = this.validateSpeed(speed);
@@ -240,10 +239,33 @@ class HaversineDistanceSpeedCalculator {
             console.log(`📏 Distance Calc: ${(distance * 1000).toFixed(1)}m, Time: ${timeDiffMs}ms, Speed: ${speed.toFixed(1)}km/h`);
             this.totalDistance += distance;
         }
-
+    
         this.lastPosition = currentPoint;
         this.currentSpeed = speed;
+    
+        // Simpan data ke localStorage SEBELUM return
+        const positionData = {
+            lat: currentPosition.lat,
+            lng: currentPosition.lng,
+            timestamp: now,
+            speed: speed,
+            distance: distance,
+            unit: this.unitNumber,
+            driver: this.driverName
+        };
+    
+        const offlinePositions = JSON.parse(localStorage.getItem('offline_positions') || '[]');
+        offlinePositions.push(positionData);
+        localStorage.setItem('offline_positions', JSON.stringify(offlinePositions));
 
+        if (!navigator.onLine) {
+            navigator.serviceWorker.ready.then(registration => {
+                registration.sync.register('sync-positions')
+                    .then(() => console.log('🔄 Registered sync for offline positions'))
+                    .catch(err => console.error('Error registering sync:', err));
+            });
+        }
+    
         return {
             distance: distance,
             speed: speed,
