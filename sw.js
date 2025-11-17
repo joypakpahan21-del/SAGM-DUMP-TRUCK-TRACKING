@@ -149,7 +149,227 @@ async function handleGPSFetch(request) {
     });
   }
 }
+// ✅ INFINITY SYNC STRATEGY - Tidak pernah berhenti sync
+async function startInfinitySync() {
+  console.log('♾️ Starting infinity sync strategy');
+  
+  // Sync immediately
+  await syncCachedGPSData();
+  
+  // Then set up continuous sync
+  const continuousSync = async () => {
+      if (navigator.onLine) {
+          try {
+              await syncCachedGPSData();
+          } catch (error) {
+              console.error('Continuous sync error:', error);
+          }
+      }
+      
+      // Schedule next sync - tidak pernah berhenti
+      setTimeout(continuousSync, 30000); // Sync setiap 30 detik
+  };
+  
+  continuousSync();
+}
 
+// ✅ ENHANCED BACKGROUND SYNC dengan infinity retry
+self.addEventListener('sync', (event) => {
+  console.log('🔄 Infinity Background Sync:', event.tag);
+  
+  switch (event.tag) {
+      case 'infinity-gps-sync':
+          event.waitUntil(performInfinitySync());
+          break;
+          
+      case 'gps-health-check':
+          event.waitUntil(performInfinityHealthCheck());
+          break;
+          
+      default:
+          // Untuk sync event lainnya, tetap process
+          event.waitUntil(syncCachedGPSData());
+  }
+});
+
+// ✅ INFINITY SYNC FUNCTION
+async function performInfinitySync() {
+  console.log('♾️ Starting infinity sync process...');
+  
+  let attempt = 0;
+  const maxAttempts = 10; // Batas wajar untuk prevent infinite loop
+  
+  while (attempt < maxAttempts) {
+      try {
+          await syncCachedGPSData();
+          console.log(`✅ Infinity sync completed on attempt ${attempt + 1}`);
+          
+          // Notify clients tentang sync success
+          await notifyClients({
+              type: 'INFINITY_SYNC_COMPLETED',
+              data: {
+                  attempt: attempt + 1,
+                  timestamp: new Date().toISOString(),
+                  status: 'success'
+              }
+          });
+          
+          return; // Berhasil, keluar dari loop
+          
+      } catch (error) {
+          attempt++;
+          console.warn(`❌ Infinity sync attempt ${attempt} failed:`, error.message);
+          
+          if (attempt >= maxAttempts) {
+              console.error('🚨 Maximum infinity sync attempts reached');
+              
+              // Notify clients tentang failure
+              await notifyClients({
+                  type: 'INFINITY_SYNC_FAILED',
+                  data: {
+                      attempt: attempt,
+                      error: error.message,
+                      timestamp: new Date().toISOString()
+                  }
+              });
+              
+              break;
+          }
+          
+          // Exponential backoff
+          const delay = Math.min(1000 * Math.pow(2, attempt), 30000);
+          console.log(`⏳ Retrying in ${delay}ms...`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+      }
+  }
+}
+
+// ✅ INFINITY HEALTH CHECK FUNCTION
+async function performInfinityHealthCheck() {
+  try {
+      console.log('🔍 Performing infinity health check...');
+      
+      const healthStatus = {
+          timestamp: new Date().toISOString(),
+          online: navigator.onLine,
+          cacheStatus: await getCacheStatus(),
+          syncQueue: await getSyncQueueStatus(),
+          storage: await getStorageEstimate(),
+          serviceWorker: 'active',
+          infinityMode: true
+      };
+      
+      console.log('🔍 Infinity Health Check:', healthStatus);
+      
+      // Notify clients tentang health status
+      await notifyClients({
+          type: 'INFINITY_HEALTH_CHECK',
+          data: healthStatus
+      });
+      
+      // Schedule next health check jika dalam infinity mode
+      if (healthStatus.infinityMode) {
+          setTimeout(() => {
+              self.registration.sync.register('gps-health-check')
+                  .then(() => console.log('🔍 Next infinity health check scheduled'))
+                  .catch(err => console.error('Health check scheduling failed:', err));
+          }, 60000); // Setiap 1 menit
+      }
+      
+      return healthStatus;
+      
+  } catch (error) {
+      console.error('❌ Infinity health check failed:', error);
+      
+      await notifyClients({
+          type: 'INFINITY_HEALTH_CHECK_FAILED',
+          data: {
+              error: error.message,
+              timestamp: new Date().toISOString()
+          }
+      });
+  }
+}
+
+// ✅ HELPER FUNCTION: Get Cache Status
+async function getCacheStatus() {
+  try {
+      const syncCache = await caches.open(SYNC_QUEUE_CACHE);
+      const gpsCache = await caches.open(GPS_DATA_CACHE);
+      
+      const syncRequests = await syncCache.keys();
+      const gpsRequests = await gpsCache.keys();
+      
+      return {
+          syncQueueSize: syncRequests.length,
+          gpsCacheSize: gpsRequests.length,
+          totalItems: syncRequests.length + gpsRequests.length,
+          lastUpdate: new Date().toISOString()
+      };
+  } catch (error) {
+      return { error: error.message };
+  }
+}
+
+// ✅ HELPER FUNCTION: Get Sync Queue Status
+async function getSyncQueueStatus() {
+  try {
+      const cache = await caches.open(SYNC_QUEUE_CACHE);
+      const requests = await cache.keys();
+      
+      let highPriority = 0;
+      let mediumPriority = 0;
+      let lowPriority = 0;
+      let totalSize = 0;
+      
+      for (const request of requests) {
+          const response = await cache.match(request);
+          if (response) {
+              const item = await response.json();
+              switch (item.priority) {
+                  case 'realtime_high': highPriority++; break;
+                  case 'waypoints_medium': mediumPriority++; break;
+                  case 'status_low': lowPriority++; break;
+              }
+              
+              // Estimate size
+              const itemSize = new Blob([JSON.stringify(item)]).size;
+              totalSize += itemSize;
+          }
+      }
+      
+      return {
+          total: requests.length,
+          byPriority: { highPriority, mediumPriority, lowPriority },
+          estimatedSize: (totalSize / 1024).toFixed(2) + ' KB',
+          oldestItem: await getOldestCachedItem()
+      };
+  } catch (error) {
+      return { error: error.message };
+  }
+}
+async function getOldestCachedItem() {
+  try {
+      const cache = await caches.open(SYNC_QUEUE_CACHE);
+      const requests = await cache.keys();
+      
+      let oldestTimestamp = Date.now();
+      for (const request of requests) {
+          const response = await cache.match(request);
+          if (response) {
+              const item = await response.json();
+              const itemTime = new Date(item.timestamp).getTime();
+              if (itemTime < oldestTimestamp) {
+                  oldestTimestamp = itemTime;
+              }
+          }
+      }
+      
+      return new Date(oldestTimestamp).toISOString();
+  } catch (error) {
+      return null;
+  }
+}
 // ✅ HANDLE GPS WRITE OPERATIONS - Cache dulu, sync nanti
 async function handleGPSWriteOperation(request) {
   console.log('📝 GPS Write Operation - Caching for offline sync');
@@ -291,27 +511,31 @@ function getSyncPriority(data) {
 }
 
 // ✅ BACKGROUND SYNC EVENT - Real-time data sync
+// ✅ ENHANCED BACKGROUND SYNC EVENT
 self.addEventListener('sync', (event) => {
   console.log('🔄 Background Sync Event:', event.tag);
   
   switch (event.tag) {
-    case 'background-gps-sync':
-      event.waitUntil(syncCachedGPSData());
-      break;
-      
-    case 'emergency-gps-backup':
-      event.waitUntil(performEmergencyBackup());
-      break;
-      
-    case 'health-check-sync':
-      event.waitUntil(performHealthCheckSync());
-      break;
-      
-    default:
-      console.log('🔄 Unknown sync tag:', event.tag);
+      case 'infinity-gps-sync':
+      case 'background-gps-sync':
+          event.waitUntil(performInfinitySync());
+          break;
+          
+      case 'gps-health-check':
+      case 'health-check-sync':
+          event.waitUntil(performInfinityHealthCheck());
+          break;
+          
+      case 'emergency-gps-backup':
+          event.waitUntil(performEmergencyBackup());
+          break;
+          
+      default:
+          console.log('🔄 Unknown sync tag:', event.tag);
+          // Fallback ke sync normal
+          event.waitUntil(syncCachedGPSData());
   }
 });
-
 // ✅ SYNC CACHED GPS DATA - Process semua data yang tertahan
 async function syncCachedGPSData() {
   try {
