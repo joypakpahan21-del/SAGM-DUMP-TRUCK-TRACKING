@@ -136,6 +136,63 @@ startJourney= () => {
     this.updateJourneyDisplay();
 }
 
+class EnhancedBackgroundTracker {
+    constructor(logger) {
+        this.logger = logger;
+        this.wakeLock = null;
+        this.backgroundTimer = null;
+        this.lastBackgroundPosition = null;
+    }
+
+    async acquireWakeLock() {
+        try {
+            if ('wakeLock' in navigator) {
+                this.wakeLock = await navigator.wakeLock.request('screen');
+                this.wakeLock.addEventListener('release', () => {
+                    console.log('Wake Lock was released');
+                });
+                console.log('Wake Lock is active');
+            }
+        } catch (err) {
+            console.error('Error acquiring wake lock:', err);
+        }
+    }
+
+    handleVisibilityChange() {
+        if (document.visibilityState === 'visible') {
+            // Returning to foreground
+            if (this.backgroundTimer) {
+                clearInterval(this.backgroundTimer);
+                this.backgroundTimer = null;
+            }
+            this.logger.addLog('Returned to foreground', 'info');
+        } else {
+            // Entering background
+            this.startBackgroundTracking();
+            this.logger.addLog('Entered background - tracking continues', 'info');
+        }
+    }
+
+    startBackgroundTracking() {
+        if (!this.backgroundTimer) {
+            this.backgroundTimer = setInterval(() => {
+                this.logBackgroundState();
+            }, 5000); // Log every 5 seconds in background
+        }
+    }
+
+    logBackgroundState() {
+        const state = {
+            timestamp: new Date().toISOString(),
+            lastPosition: this.logger.lastPosition,
+            distance: this.logger.totalDistance,
+            batteryLevel: this.logger.getBatteryLevel()
+        };
+        console.log('Background state:', state);
+    }
+}
+
+
 
 // ===== HAVERSINE DISTANCE & REAL-TIME SPEED CALCULATOR =====
 class HaversineDistanceSpeedCalculator {
@@ -441,10 +498,11 @@ class RealTimeGPSProcessor {
             // ✅ DETEKSI BACKGROUND/OFFLINE DARI CONTEXT
             const isBackground = context.background || document.hidden;
             const isOffline = context.offline || !navigator.onLine;
+            
             const processedPosition = {
                 lat: gpsPosition.coords.latitude,
                 lng: gpsPosition.coords.longitude,
-                timestamp: this.getTimestampFn(), // ✅ PAKAI STOPWATCH UTAMA
+                timestamp: this.getTimestampFn(),
                 accuracy: gpsPosition.coords.accuracy
             };
             const result = this.distanceCalculator.calculateDistanceAndSpeed(processedPosition);
@@ -462,14 +520,15 @@ class RealTimeGPSProcessor {
                 speed: result.speed || 0,
                 totalDistance: result.totalDistance || 0,
                 timestamp: result.timestamp,
-                quality: 'maximum', // ✅ ALWAYS MAXIMUM QUALITY
+                quality: 'maximum',
                 processed: 'maximum_frequency',
                 accuracy: processedPosition.accuracy,
-                background: context.background || false,
-                offline: context.offline || false,
+                // ✅ Use the calculated variables instead of direct context access
+                background: isBackground,
+                offline: isOffline,
                 noFiltering: true
             };
-            console.log(`🚀 MAX PROCESS: ${finalResult.distance.toFixed(6)}km, Speed: ${finalResult.speed.toFixed(1)}km/h`);
+            console.log(`🚀 MAX PROCESS: ${finalResult.distance.toFixed(6)}km, Speed: ${finalResult.speed.toFixed(1)}km/h, Background: ${finalResult.background}, Offline: ${finalResult.offline}`);
             this.notifyCallbacks(finalResult);
             return finalResult;
         } catch (error) {
@@ -2284,8 +2343,21 @@ class UnlimitedGPSProcessor extends BackgroundAwareGPSProcessor {
         this.lastPositionTime = Date.now();
         this.stuckDetectionThreshold = 30000; // 30 detik
         this.backgroundProcessingEnabled = true;
-        
+        console.log('✅ UnlimitedStorageManager initialized with unlimited capacity');
         this.startUnlimitedProcessing();
+
+        this.mainStopwatch = mainStopwatch;
+        this.unlimitedMode = true;
+        this.lastPositionTime = Date.now();
+        this.stuckDetectionThreshold = 30000; // 30 detik
+        this.backgroundProcessingEnabled = true;
+        this.distanceCalculator = new HaversineDistanceSpeedCalculator(this.mainStopwatch);
+        if (!this.kalmanFilter) {
+            this.kalmanFilter = new GPSKalmanFilter();
+        }
+        console.log('♾️ Unlimited GPS Processor initialized');
+        this.startUnlimitedProcessing();
+        
     }
 
     startUnlimitedProcessing() {
@@ -2314,7 +2386,7 @@ class UnlimitedGPSProcessor extends BackgroundAwareGPSProcessor {
                 console.warn('⚠️ No position updates, checking GPS...');
                 this.recoverFromStuckState();
             }
-            setTimeout(checkStuck, 10000); // Check setiap 10 detik
+            setTimeout(checkStuck, 10000); 
         };
         
         checkStuck();
@@ -2364,12 +2436,25 @@ class UnlimitedGPSProcessor extends BackgroundAwareGPSProcessor {
         return false;
     }
 
+    calculateDistance(lat1, lon1, lat2, lon2) {
+        const R = 6371000; // Earth radius in meters
+        const dLat = (lat2 - lat1) * Math.PI / 180;
+        const dLon = (lon2 - lon1) * Math.PI / 180;
+        const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                  Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * 
+                  Math.sin(dLon/2) * Math.sin(dLon/2);
+        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+        return R * c; // Distance in meters
+    }
+
     recoverFromStuckState() {
         console.log('🔄 Recovering from stuck state...');
         
         // Reset processors
         this.distanceCalculator.reset();
-        this.kalmanFilter.reset();
+        if (this.kalmanFilter) {
+            this.kalmanFilter.reset();
+        }
         
         // Clear queue yang mungkin corrupt
         if (this.positionQueue.length > 1000) {
@@ -2386,202 +2471,46 @@ class UnlimitedGPSProcessor extends BackgroundAwareGPSProcessor {
         this.lastPositionTime = Date.now();
         return super.processPosition(position, isBackground, isOffline);
     }
-}
-
-// ===== ENHANCED UNLIMITED STORAGE MANAGER =====
-class UnlimitedStorageManager extends EnhancedStorageManager {
-    constructor() {
-        super();
-        this.unlimitedMode = true;
-        this.totalDataPointsStored = 0;
-        this.startUnlimitedStorageManagement();
-    }
-
-    startUnlimitedStorageManagement() {
-        // Continuous storage management
-        this.startStorageHealthMonitor();
-        this.startAutoCompression();
-    }
-
-    startStorageHealthMonitor() {
-        const monitorStorage = () => {
-            this.checkUnlimitedStorageHealth();
-            setTimeout(monitorStorage, 60000); // Check setiap 1 menit
-        };
-        
-        monitorStorage();
-    }
-
-    startAutoCompression() {
-        const autoCompress = () => {
-            this.performSmartCompression();
-            setTimeout(autoCompress, 2 * 60 * 1000); // Compress setiap 2 menit
-        };
-        
-        autoCompress();
-    }
-
-    checkUnlimitedStorageHealth() {
-        try {
-            const waypoints = this.loadAllWaypoints();
-            const compressed = this.loadCompressedData();
-            const archived = this.loadArchivedData();
-            
-            const totalPoints = waypoints.length + 
-                compressed.reduce((sum, batch) => sum + batch.compressedCount, 0) +
-                archived.reduce((sum, archive) => sum + archive.count, 0);
-            
-            this.totalDataPointsStored = totalPoints;
-            
-            // Emergency cleanup jika mendekati limit
-            if (totalPoints > this.QUOTA_LIMITS.CRITICAL_THRESHOLD) {
-                console.warn('🚨 CRITICAL: Storage near limit, performing emergency compression');
-                this.emergencyStorageCleanup();
-            }
-            
-            return {
-                totalPoints,
-                health: this.checkStorageHealth(),
-                needsCompression: waypoints.length > this.QUOTA_LIMITS.COMPRESSION_THRESHOLD
-            };
-            
-        } catch (error) {
-            console.error('Storage health check failed:', error);
-            return { error: 'check_failed' };
-        }
-    }
-
-    performSmartCompression() {
-        const waypoints = this.loadAllWaypoints();
-        
-        if (waypoints.length > this.QUOTA_LIMITS.COMPRESSION_THRESHOLD) {
-            console.log('🔧 Performing smart compression...');
-            
-            // Compress points yang sudah synced dan berusia > 30 menit
-            const now = new Date();
-            const thirtyMinutesAgo = new Date(now.getTime() - (30 * 60 * 1000));
-            
-            const toCompress = waypoints.filter(wp => 
-                wp.synced && new Date(wp.timestamp) < thirtyMinutesAgo
-            );
-            
-            const toKeep = waypoints.filter(wp => 
-                !wp.synced || new Date(wp.timestamp) >= thirtyMinutesAgo
-            );
-            
-            if (toCompress.length > 0) {
-                this.saveToStorage(toKeep);
-                
-                // Add to compressed storage dengan smart grouping
-                this.addToCompressedStorage(toCompress);
-                
-                console.log(`✅ Smart compression: ${toCompress.length} points compressed, ${toKeep.length} kept active`);
-            }
-        }
-    }
-
-    addToCompressedStorage(waypoints) {
-        const compressed = this.loadCompressedData();
-        
-        // Group by time windows (1 hour chunks) untuk efficiency
-        const grouped = this.groupWaypointsByTime(waypoints, 60 * 60 * 1000); // 1 hour
-        
-        grouped.forEach(group => {
-            compressed.push({
-                batchId: `compressed_${group.startTime}_${group.endTime}`,
-                compressedAt: new Date().toISOString(),
-                originalCount: group.waypoints.length,
-                startTime: new Date(group.startTime).toISOString(),
-                endTime: new Date(group.endTime).toISOString(),
-                data: this.compressWaypoints(group.waypoints)
-            });
-        });
-        
-        // Keep hanya compressed data yang diperlukan
-        if (compressed.length > 100) {
-            compressed.splice(0, compressed.length - 80); // Keep last 80 batches
-        }
-        
-        localStorage.setItem(this.STORAGE_KEYS.COMPRESSED_DATA, JSON.stringify(compressed));
-    }
-
-    groupWaypointsByTime(waypoints, timeWindowMs) {
-        if (waypoints.length === 0) return [];
-        
-        const groups = [];
-        let currentGroup = [];
-        let currentWindowStart = new Date(waypoints[0].timestamp).getTime();
-        
-        waypoints.forEach(waypoint => {
-            const pointTime = new Date(waypoint.timestamp).getTime();
-            
-            if (pointTime - currentWindowStart < timeWindowMs) {
-                currentGroup.push(waypoint);
-            } else {
-                if (currentGroup.length > 0) {
-                    groups.push({
-                        startTime: currentWindowStart,
-                        endTime: currentWindowStart + timeWindowMs,
-                        waypoints: currentGroup
-                    });
-                }
-                currentGroup = [waypoint];
-                currentWindowStart = pointTime;
-            }
-        });
-        
-        // Add the last group
-        if (currentGroup.length > 0) {
-            groups.push({
-                startTime: currentWindowStart,
-                endTime: currentWindowStart + timeWindowMs,
-                waypoints: currentGroup
-            });
-        }
-        
-        return groups;
-    }
-
-    emergencyStorageCleanup() {
-        console.warn('🚨 PERFORMING EMERGENCY STORAGE CLEANUP');
+    processPosition(position, isBackground = false, isOffline = false) {
+        this.lastPositionTime = Date.now();
         
         try {
-            const waypoints = this.loadAllWaypoints();
+            // Process dengan parent class terlebih dahulu
+            const result = super.processPosition(position, isBackground, isOffline);
             
-            // Keep only:
-            // 1. Unsynced points
-            // 2. Points from last 15 minutes
-            const fifteenMinutesAgo = new Date(Date.now() - (15 * 60 * 1000));
+            // ✅ TAMBAHKAN UNLIMITED FEATURES
+            if (result && this.unlimitedMode) {
+                this.processInUnlimitedMode(result, position);
+            }
             
-            const toKeep = waypoints.filter(wp => 
-                !wp.synced || new Date(wp.timestamp) >= fifteenMinutesAgo
-            );
-            
-            const removedCount = waypoints.length - toKeep.length;
-            
-            this.saveToStorage(toKeep);
-            
-            console.log(`✅ Emergency cleanup: Removed ${removedCount} points, kept ${toKeep.length}`);
-            
-            return removedCount;
-            
+            return result;
         } catch (error) {
-            console.error('❌ Emergency storage cleanup failed:', error);
-            return 0;
+            console.error('❌ Error in unlimited processor:', error);
+            this.recoverFromStuckState();
+            return null;
         }
     }
-
-    getUnlimitedStorageStats() {
-        const health = this.checkUnlimitedStorageHealth();
-        const metadata = this.getStorageMetadata();
+    processInUnlimitedMode(processedData, originalPosition) {
+        // Unlimited mode processing logic
+        if (this.positionQueue.length > 500) {
+            this.processAllQueuedPositions();
+        }
         
+        // ✅ GUNAKAN STOPWATCH UNTUK TIMESTAMP YANG KONSISTEN
+        if (this.mainStopwatch) {
+            processedData.stopwatchTimestamp = this.mainStopwatch.getCurrentTimestamp();
+            processedData.stopwatchTime = this.mainStopwatch.getFormattedTime();
+        }
+    }
+    getUnlimitedStatus() {
         return {
-            totalDataPoints: this.totalDataPointsStored,
-            storageHealth: health,
-            compressionEnabled: this.compressionEnabled,
-            autoArchiveEnabled: this.autoArchiveEnabled,
-            metadata: metadata,
-            usage: this.getStorageUsage()
+            unlimitedMode: this.unlimitedMode,
+            lastPositionTime: this.lastPositionTime,
+            stuckDetectionThreshold: this.stuckDetectionThreshold,
+            positionQueueSize: this.positionQueue.length,
+            backgroundProcessingEnabled: this.backgroundProcessingEnabled,
+            backgroundMode: this.backgroundMode,
+            offlineMode: this.offlineMode
         };
     }
 }
@@ -3998,6 +3927,205 @@ class EnhancedStorageManager {
         });
     }
 }
+
+// ===== ENHANCED UNLIMITED STORAGE MANAGER =====
+class UnlimitedStorageManager extends EnhancedStorageManager {
+    constructor() {
+        super();
+        this.unlimitedMode = true;
+        this.totalDataPointsStored = 0;
+        this.startUnlimitedStorageManagement();
+    }
+
+    startUnlimitedStorageManagement() {
+        // Continuous storage management
+        this.startStorageHealthMonitor();
+        this.startAutoCompression();
+    }
+
+    startStorageHealthMonitor() {
+        const monitorStorage = () => {
+            this.checkUnlimitedStorageHealth();
+            setTimeout(monitorStorage, 60000); // Check setiap 1 menit
+        };
+        
+        monitorStorage();
+    }
+
+    startAutoCompression() {
+        const autoCompress = () => {
+            this.performSmartCompression();
+            setTimeout(autoCompress, 2 * 60 * 1000); // Compress setiap 2 menit
+        };
+        
+        autoCompress();
+    }
+
+    checkUnlimitedStorageHealth() {
+        try {
+            const waypoints = this.loadAllWaypoints();
+            const compressed = this.loadCompressedData();
+            const archived = this.loadArchivedData();
+            
+            const totalPoints = waypoints.length + 
+                compressed.reduce((sum, batch) => sum + batch.compressedCount, 0) +
+                archived.reduce((sum, archive) => sum + archive.count, 0);
+            
+            this.totalDataPointsStored = totalPoints;
+            
+            // Emergency cleanup jika mendekati limit
+            if (totalPoints > this.QUOTA_LIMITS.CRITICAL_THRESHOLD) {
+                console.warn('🚨 CRITICAL: Storage near limit, performing emergency compression');
+                this.emergencyStorageCleanup();
+            }
+            
+            return {
+                totalPoints,
+                health: this.checkStorageHealth(),
+                needsCompression: waypoints.length > this.QUOTA_LIMITS.COMPRESSION_THRESHOLD
+            };
+            
+        } catch (error) {
+            console.error('Storage health check failed:', error);
+            return { error: 'check_failed' };
+        }
+    }
+
+    performSmartCompression() {
+        const waypoints = this.loadAllWaypoints();
+        
+        if (waypoints.length > this.QUOTA_LIMITS.COMPRESSION_THRESHOLD) {
+            console.log('🔧 Performing smart compression...');
+            
+            // Compress points yang sudah synced dan berusia > 30 menit
+            const now = new Date();
+            const thirtyMinutesAgo = new Date(now.getTime() - (30 * 60 * 1000));
+            
+            const toCompress = waypoints.filter(wp => 
+                wp.synced && new Date(wp.timestamp) < thirtyMinutesAgo
+            );
+            
+            const toKeep = waypoints.filter(wp => 
+                !wp.synced || new Date(wp.timestamp) >= thirtyMinutesAgo
+            );
+            
+            if (toCompress.length > 0) {
+                this.saveToStorage(toKeep);
+                
+                // Add to compressed storage dengan smart grouping
+                this.addToCompressedStorage(toCompress);
+                
+                console.log(`✅ Smart compression: ${toCompress.length} points compressed, ${toKeep.length} kept active`);
+            }
+        }
+    }
+
+    addToCompressedStorage(waypoints) {
+        const compressed = this.loadCompressedData();
+        
+        // Group by time windows (1 hour chunks) untuk efficiency
+        const grouped = this.groupWaypointsByTime(waypoints, 60 * 60 * 1000); // 1 hour
+        
+        grouped.forEach(group => {
+            compressed.push({
+                batchId: `compressed_${group.startTime}_${group.endTime}`,
+                compressedAt: new Date().toISOString(),
+                originalCount: group.waypoints.length,
+                startTime: new Date(group.startTime).toISOString(),
+                endTime: new Date(group.endTime).toISOString(),
+                data: this.compressWaypoints(group.waypoints)
+            });
+        });
+        
+        // Keep hanya compressed data yang diperlukan
+        if (compressed.length > 100) {
+            compressed.splice(0, compressed.length - 80); // Keep last 80 batches
+        }
+        
+        localStorage.setItem(this.STORAGE_KEYS.COMPRESSED_DATA, JSON.stringify(compressed));
+    }
+
+    groupWaypointsByTime(waypoints, timeWindowMs) {
+        if (waypoints.length === 0) return [];
+        
+        const groups = [];
+        let currentGroup = [];
+        let currentWindowStart = new Date(waypoints[0].timestamp).getTime();
+        
+        waypoints.forEach(waypoint => {
+            const pointTime = new Date(waypoint.timestamp).getTime();
+            
+            if (pointTime - currentWindowStart < timeWindowMs) {
+                currentGroup.push(waypoint);
+            } else {
+                if (currentGroup.length > 0) {
+                    groups.push({
+                        startTime: currentWindowStart,
+                        endTime: currentWindowStart + timeWindowMs,
+                        waypoints: currentGroup
+                    });
+                }
+                currentGroup = [waypoint];
+                currentWindowStart = pointTime;
+            }
+        });
+        
+        // Add the last group
+        if (currentGroup.length > 0) {
+            groups.push({
+                startTime: currentWindowStart,
+                endTime: currentWindowStart + timeWindowMs,
+                waypoints: currentGroup
+            });
+        }
+        
+        return groups;
+    }
+
+    emergencyStorageCleanup() {
+        console.warn('🚨 PERFORMING EMERGENCY STORAGE CLEANUP');
+        
+        try {
+            const waypoints = this.loadAllWaypoints();
+            
+            // Keep only:
+            // 1. Unsynced points
+            // 2. Points from last 15 minutes
+            const fifteenMinutesAgo = new Date(Date.now() - (15 * 60 * 1000));
+            
+            const toKeep = waypoints.filter(wp => 
+                !wp.synced || new Date(wp.timestamp) >= fifteenMinutesAgo
+            );
+            
+            const removedCount = waypoints.length - toKeep.length;
+            
+            this.saveToStorage(toKeep);
+            
+            console.log(`✅ Emergency cleanup: Removed ${removedCount} points, kept ${toKeep.length}`);
+            
+            return removedCount;
+            
+        } catch (error) {
+            console.error('❌ Emergency storage cleanup failed:', error);
+            return 0;
+        }
+    }
+
+    getUnlimitedStorageStats() {
+        const health = this.checkUnlimitedStorageHealth();
+        const metadata = this.getStorageMetadata();
+        
+        return {
+            totalDataPoints: this.totalDataPointsStored,
+            storageHealth: health,
+            compressionEnabled: this.compressionEnabled,
+            autoArchiveEnabled: this.autoArchiveEnabled,
+            metadata: metadata,
+            usage: this.getStorageUsage()
+        };
+    }
+}
+
 
 // ===== INTELLIGENT SYNC MANAGER =====
 class IntelligentSyncManager {
@@ -5901,6 +6029,7 @@ class LogoutManager {
         };
     }
 }
+
 // ===== MODIFIKASI UNLIMITED GPS LOGGER DENGAN LOGOUT MANAGER =====
 class UnlimitedDTGPSLoggerWithLogout extends UnlimitedDTGPSLogger {
     constructor() {
@@ -5912,9 +6041,62 @@ class UnlimitedDTGPSLoggerWithLogout extends UnlimitedDTGPSLogger {
             pollDelay: 1000,
             enableHighAccuracy: true
         });
+        console.log('🚪 Unlimited GPS Logger with Logout Management initialized');
     }
     
+    addProcessorSwitchToUI() {
+        try {
+            // Cari atau buat switch element
+            let switchContainer = document.getElementById('processorSwitch');
+            if (!switchContainer) {
+                switchContainer = document.createElement('div');
+                switchContainer.id = 'processorSwitch';
+                switchContainer.className = 'processor-switch';
+                switchContainer.innerHTML = `
+                    <label class="switch">
+                        <input type="checkbox" id="unlimitedProcessorToggle" ${this.useUnlimitedProcessor ? 'checked' : ''}>
+                        <span class="slider">
+                            <span class="slider-label">Real-time</span>
+                            <span class="slider-label">Unlimited</span>
+                        </span>
+                    </label>
+                    <span class="switch-label">GPS Processor Mode</span>
+                `;
+                
+                // Tambahkan ke UI yang sesuai
+                const controlsContainer = document.querySelector('.controls-container') || 
+                                         document.querySelector('.header') || 
+                                         document.body;
+                controlsContainer.appendChild(switchContainer);
+                
+                // Event listener untuk toggle
+                const toggle = document.getElementById('unlimitedProcessorToggle');
+                toggle.addEventListener('change', (e) => {
+                    if (e.target.checked) {
+                        this.enableUnlimitedProcessing();
+                    } else {
+                        this.disableUnlimitedProcessing();
+                    }
+                });
+                
+                console.log('✅ Processor switch UI added successfully');
+            }
+            return true;
+        } catch (error) {
+            console.error('❌ Failed to add processor switch UI:', error);
+            return false;
+        }
+    }
 
+    // ✅ METHOD UNTUK MENDAPATKAN STATUS PROCESSOR
+    getProcessorStatus() {
+        return {
+            activeProcessor: this.useUnlimitedProcessor ? 'Unlimited' : 'Real-time',
+            useUnlimitedProcessor: this.useUnlimitedProcessor,
+            realTimeProcessor: this.realTimeProcessor ? 'Available' : 'Not available',
+            unlimitedProcessor: this.unlimitedProcessor ? 'Available' : 'Not available'
+        };
+    }
     setupLogoutHandlers() {
         // Setup logout button handler
         const logoutBtn = document.getElementById('logoutBtn');
@@ -6544,16 +6726,22 @@ class EnhancedDTGPSLogger {
         this.kalmanFilter = new GPSKalmanFilter();
         this.resumeManager = new ResumeManager(this);
         this.retryManager = new EnhancedRetryManager();
-        this.storageManager = new EnhancedStorageManager();
+        this.storageManager = new UnlimitedStorageManager();
         this.syncManager = new IntelligentSyncManager();
-        this.realTimeProcessor = new RealTimeGPSProcessor();
+
+        this.realTimeProcessor = new RealTimeGPSProcessor(this.stopwatch);
+        this.unlimitedProcessor = new UnlimitedGPSProcessor(this.stopwatch);
+        this.activeProcessor = this.realTimeProcessor;
+        this.useUnlimitedProcessor = false;
+        
         this.distanceCalculator= new HaversineDistanceSpeedCalculator();
         this.distanceStateKey = 'sagm_realtime_distance_state';
         this.backgroundPoller = new BackgroundGPSPoller(this, { 
             pollDelay: 1000,
             enableHighAccuracy: true
         });
-    
+        this.backgroundTracker = new EnhancedBackgroundTracker(this);
+        this.setupEnhancedBackgroundHandling();
         this.lastDistancePersistTime = 0;
         this.accuracyTuning = {
             idleSnapKmh: 0,
@@ -6673,6 +6861,7 @@ class EnhancedDTGPSLogger {
             ignoreStorage: true            // ✅ IGNORE STORAGE LIMITS
         };
         this.restorePersistentDistanceState();
+        console.log('✅ Both RealTimeGPSProcessor and UnlimitedGPSProcessor initialized');
         console.log('🚀 Enhanced GPS Logger with ALL COMPONENTS initialized');
 
         this.init();
@@ -6730,6 +6919,40 @@ class EnhancedDTGPSLogger {
         } catch (error) {
             console.error('❌ Error during system initialization:', error);
             this.addLog('Error inisialisasi sistem', 'error');
+        }
+    }
+
+    addProcessorSwitchToUI() {
+        // Cari atau buat switch element
+        let switchContainer = document.getElementById('processorSwitch');
+        if (!switchContainer) {
+            switchContainer = document.createElement('div');
+            switchContainer.id = 'processorSwitch';
+            switchContainer.className = 'processor-switch';
+            switchContainer.innerHTML = `
+                <label class="switch">
+                    <input type="checkbox" id="unlimitedProcessorToggle">
+                    <span class="slider">
+                        <span class="slider-label">Real-time</span>
+                        <span class="slider-label">Unlimited</span>
+                    </span>
+                </label>
+                <span class="switch-label">GPS Processor Mode</span>
+            `;
+            
+            // Tambahkan ke UI yang sesuai
+            const controlsContainer = document.querySelector('.controls-container') || document.body;
+            controlsContainer.appendChild(switchContainer);
+            
+            // Event listener untuk toggle
+            const toggle = document.getElementById('unlimitedProcessorToggle');
+            toggle.addEventListener('change', (e) => {
+                if (e.target.checked) {
+                    this.enableUnlimitedProcessing();
+                } else {
+                    this.disableUnlimitedProcessing();
+                }
+            });
         }
     }
 
@@ -6803,6 +7026,27 @@ class EnhancedDTGPSLogger {
             console.error('❌ Error in handleGPSPosition:', error);
             this.addLog('Error memproses posisi GPS', 'error');
         }
+    }
+
+    setupEnhancedBackgroundHandling() {
+        // Add visibility change listener
+        document.addEventListener('visibilitychange', () => {
+            this.backgroundTracker.handleVisibilityChange();
+        });
+
+        // Initialize wake lock
+        if ('wakeLock' in navigator) {
+            this.backgroundTracker.acquireWakeLock();
+        }
+
+        // Add beforeunload handler
+        window.addEventListener('beforeunload', (event) => {
+            if (this.journeyStatus === 'started') {
+                this.saveSystemState();
+                event.preventDefault();
+                event.returnValue = 'Journey is still active';
+            }
+        });
     }
     getUnlimitedOperationStatus() {
         return this.unlimitedOperationManager ? this.unlimitedOperationManager.getUnlimitedMetrics() : null;
@@ -6985,6 +7229,88 @@ triggerEnhancedSync = async () => {
             realTime: this.getRealTimeMetrics()
         };
     }
+    enableUnlimitedProcessing() {
+        this.useUnlimitedProcessor = true;
+        this.activeProcessor = this.unlimitedProcessor;
+        console.log('♾️ Unlimited GPS Processing enabled');
+    }
+
+    disableUnlimitedProcessing() {
+        this.useUnlimitedProcessor = false;
+        this.activeProcessor = this.realTimeProcessor;
+        console.log('⚡ Real-time GPS Processing enabled');
+    }
+
+    handleGPSPosition(position, options = {}) {
+        if (!position || !position.coords) return;
+
+        const { source = 'watch', forceBackground = false, forceOffline = false } = options;
+
+        if (source === 'background' && this.isDuplicatePosition(position)) {
+            return;
+        }
+
+        this.healthMetrics.gpsUpdates++;
+        if (this.unlimitedOperationManager) {
+            this.unlimitedOperationManager.incrementPositionCount();
+            this.unlimitedOperationManager.incrementDataPoints();
+        }
+
+        const isBackground = forceBackground || document.hidden;
+        const isOffline = forceOffline || !navigator.onLine;
+
+        try {
+            const processedData = this.activeProcessor.processPosition(position, {
+                background: isBackground,
+                offline: isOffline,
+                source: source
+            });
+            
+            if (processedData) {
+                this.currentSpeed = processedData.speed;
+                this.totalDistance = processedData.totalDistance;
+                this.lastPosition = {
+                    lat: position.coords.latitude,
+                    lng: position.coords.longitude,
+                    accuracy: position.coords.accuracy,
+                    bearing: position.coords.heading,
+                    timestamp: new Date()
+                };
+                
+                this.updateRealTimeDisplay(processedData);
+                
+                if (this.healthMetrics.gpsUpdates % 5 === 0) {
+                    console.log(`📊 GPS Update #${this.healthMetrics.gpsUpdates}:`, {
+                        processor: this.useUnlimitedProcessor ? 'Unlimited' : 'Real-time',
+                        speed: this.currentSpeed.toFixed(1) + ' km/h',
+                        totalDistance: this.totalDistance.toFixed(3) + ' km',
+                        background: isBackground,
+                        offline: isOffline,
+                        stopwatchTime: this.stopwatch.getFormattedTime()
+                    });
+                }
+            }
+        } catch (error) {
+            console.error('❌ Error in handleGPSPosition:', error);
+            this.addLog('Error memproses posisi GPS', 'error');
+        }
+    }
+    getProcessorStatus() {
+        return {
+            activeProcessor: this.useUnlimitedProcessor ? 'Unlimited' : 'Real-time',
+            realTimeProcessor: this.realTimeProcessor?.getCurrentData ? this.realTimeProcessor.getCurrentData() : null,
+            unlimitedProcessor: this.unlimitedProcessor?.getUnlimitedStatus ? this.unlimitedProcessor.getUnlimitedStatus() : null,
+            useUnlimitedProcessor: this.useUnlimitedProcessor
+        };
+    }
+    enableTrueInfinityMode() {
+        console.log('♾️ Enabling True Infinity Mode with Unlimited Processor');
+        this.enableUnlimitedProcessing();
+        this.startInfinityTrackingSystems();
+        this.configureMaximumPerformance();
+    }
+
+
 
     // === IMPLEMENTASI LENGKAP DARI SEMUA METHOD YANG ADA DI KODE LAMA ===
 
@@ -8021,15 +8347,19 @@ const logoutStyles = `
 const styleSheet = document.createElement('style');
 styleSheet.textContent = logoutStyles;
 document.head.appendChild(styleSheet);
-
-// ===== APPLICATION INITIALIZATION =====
 document.addEventListener('DOMContentLoaded', function() {
-    console.log('🚀 Initializing Enhanced GPS Tracker with ALL FEATURES: Unlimited Operation, Logout Management, Infinity Tracking...');
+    console.log('🚀 Initializing Enhanced GPS Tracker with ALL FEATURES: Unlimited Operation, Logout Management, Infinity Tracking, Dual Processors...');
     
     try {
-        // ✅ INITIALIZE MAIN LOGGER WITH ALL FEATURES
-        window.dtLogger = new EnhancedDTGPSLogger();
-        console.log('✅ Enhanced GPS Tracker with ALL FEATURES initialized successfully');
+        // ✅ INISIALISASI DENGAN CLASS PALING LENGKAP
+        window.dtLogger = new UnlimitedDTGPSLoggerWithLogout();
+        console.log('✅ Unlimited GPS Tracker with Logout Management initialized successfully');
+        
+        // ✅ TAMBAHKAN PROCESSOR SWITCH KE UI JIKA METHOD ADA
+        if (window.dtLogger.addProcessorSwitchToUI) {
+            window.dtLogger.addProcessorSwitchToUI();
+            console.log('✅ Processor switch UI added');
+        }
         
         // ✅ EXPOSE ALL DEBUGGING METHODS IN ONE PLACE
         window.getGPSDiagnostics = () => window.dtLogger?.printDiagnostics();
@@ -8048,6 +8378,11 @@ document.addEventListener('DOMContentLoaded', function() {
         // ✅ REAL-TIME & TRACKING METHODS
         window.getRealTimeMetrics = () => window.dtLogger?.getRealTimeMetrics();
         window.resetRealTimeTracking = () => window.dtLogger?.resetRealTimeTracking();
+        
+        // ✅ PROCESSOR CONTROL METHODS
+        window.getProcessorStatus = () => window.dtLogger?.getProcessorStatus();
+        window.enableUnlimitedProcessor = () => window.dtLogger?.enableUnlimitedProcessing();
+        window.disableUnlimitedProcessor = () => window.dtLogger?.disableUnlimitedProcessing();
         
         // ✅ INFINITY TRACKING CONTROL METHODS
         window.forceLockScreenMode = () => {
@@ -8077,6 +8412,12 @@ document.addEventListener('DOMContentLoaded', function() {
                 console.log('♾️ Auto-resuming ALL systems for active journey');
                 window.dtLogger.enableTrueInfinityMode();
                 
+                // ✅ OTOMATIS GUNAKAN UNLIMITED PROCESSOR UNTUK ACTIVE JOURNEY
+                if (window.dtLogger.enableUnlimitedProcessing) {
+                    window.dtLogger.enableUnlimitedProcessing();
+                    console.log('♾️ Auto-enabled Unlimited Processor for active journey');
+                }
+                
                 // ✅ ALSO START UNLIMITED OPERATION MANAGER IF NOT ALREADY RUNNING
                 if (window.dtLogger.unlimitedOperationManager) {
                     console.log('🔄 Unlimited Operation Manager auto-started for active journey');
@@ -8089,21 +8430,87 @@ document.addEventListener('DOMContentLoaded', function() {
             startComprehensiveMonitoring();
         }, 5000);
 
-        console.log('🎉 ALL SYSTEMS GO: Unlimited Operation, Logout Management, Infinity Tracking READY!');
+        console.log('🎉 ALL SYSTEMS GO: Unlimited Operation, Logout Management, Infinity Tracking, Dual Processors READY!');
+
+        // ✅ LOG STATUS AWAL
+        console.log('📊 Initial System Status:', {
+            processorMode: window.dtLogger.useUnlimitedProcessor ? 'Unlimited' : 'Real-time',
+            hasLogoutManager: !!window.dtLogger.logoutManager,
+            hasInfinityManager: !!window.dtLogger.infinityManager,
+            hasUnlimitedProcessor: !!window.dtLogger.unlimitedProcessor,
+            hasRealTimeProcessor: !!window.dtLogger.realTimeProcessor
+        });
 
     } catch (error) {
         console.error('❌ Failed to initialize GPS Tracker with all features:', error);
         
-        // Fallback to basic version
+        // Fallback to basic version dengan dual processors
         try {
+            console.log('🔄 Attempting fallback to EnhancedDTGPSLogger with dual processors...');
             window.dtLogger = new EnhancedDTGPSLogger();
-            console.log('🔄 Fallback to basic Enhanced GPS Tracker');
+            
+            // ✅ STILL ADD PROCESSOR SWITCH UNTUK FALLBACK
+            if (window.dtLogger.addProcessorSwitchToUI) {
+                window.dtLogger.addProcessorSwitchToUI();
+            }
+            
+            console.log('✅ Fallback to Enhanced GPS Tracker with Dual Processors successful');
         } catch (fallbackError) {
             console.error('❌ Fallback also failed:', fallbackError);
             showErrorMessage('Gagal menginisialisasi aplikasi GPS. Silakan refresh halaman.');
         }
     }
 });
+
+// ===== COMPREHENSIVE MONITORING FUNCTION =====
+function startComprehensiveMonitoring() {
+    console.log('📊 Starting comprehensive system monitoring...');
+    
+    // Monitor all systems every 30 seconds
+    setInterval(() => {
+        if (window.dtLogger) {
+            const diagnostics = {
+                timestamp: new Date().toLocaleTimeString(),
+                systemHealth: window.getSystemHealth ? window.getSystemHealth() : null,
+                unlimitedOperation: window.getUnlimitedOperationStatus ? window.getUnlimitedOperationStatus() : null,
+                infinityStatus: window.getInfinityStatus ? window.getInfinityStatus() : null,
+                logoutStatus: window.getLogoutStatus ? window.getLogoutStatus() : null,
+                processorStatus: window.getProcessorStatus ? window.getProcessorStatus() : null
+            };
+            
+            console.log('📈 COMPREHENSIVE SYSTEM DIAGNOSTICS:', diagnostics);
+            
+            // Auto-trigger lock screen mode if in background
+            if (document.hidden && diagnostics.infinityStatus?.lockScreen?.isLockScreenMode === false) {
+                console.log('🔒 Auto-activating lock screen mode (background detected)');
+                window.forceLockScreenMode();
+            }
+            
+            // Auto-switch to unlimited processor jika di background dan belum aktif
+            if (document.hidden && diagnostics.processorStatus?.useUnlimitedProcessor === false) {
+                console.log('♾️ Auto-switching to Unlimited Processor (background detected)');
+                window.enableUnlimitedProcessor();
+            }
+        }
+    }, 30000);
+
+    // Detailed status every 5 minutes
+    setInterval(() => {
+        if (window.dtLogger) {
+            console.group('🕒 5-MINUTE COMPREHENSIVE STATUS');
+            const diagnostics = window.getGPSDiagnostics ? window.getGPSDiagnostics() : 'No diagnostics available';
+            console.log('Full Diagnostics:', diagnostics);
+            
+            // Log processor performance
+            if (window.dtLogger.getProcessorStatus) {
+                const processorStatus = window.dtLogger.getProcessorStatus();
+                console.log('Processor Status:', processorStatus);
+            }
+            
+            console.groupEnd();
+        }
+    }, 300000);
+}
 
 // ===== COMPREHENSIVE MONITORING FUNCTION =====
 function startComprehensiveMonitoring() {
