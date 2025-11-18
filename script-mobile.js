@@ -135,6 +135,1047 @@ startJourney= () => {
     this.addLog('Perjalanan dimulai - Stopwatch aktif', 'success');
     this.updateJourneyDisplay();
 }
+// ===== UNIFIED TIMESTAMP MANAGER =====
+class UnifiedTimestampManager {
+    constructor() {
+        this.mainStopwatch = new IndependentStopwatch();
+        this.isInitialized = false;
+        this.components = new Set();
+    }
+
+    initialize() {
+        if (this.isInitialized) return;
+        
+        console.log('🕒 Unified Timestamp Manager initializing...');
+        this.mainStopwatch.start();
+        this.isInitialized = true;
+        
+        // Setup cross-component coordination
+        this.setupComponentCoordination();
+        
+        console.log('✅ Unified Timestamp Manager initialized');
+    }
+
+    setupComponentCoordination() {
+        // Coordinate all timestamp-dependent components
+        this.coordinateBackgroundTracker();
+        this.coordinateLockScreenTracker();
+        this.coordinateInfinityManager();
+        this.coordinateProcessors();
+    }
+
+    coordinateBackgroundTracker() {
+        if (window.dtLogger?.backgroundTracker) {
+            window.dtLogger.backgroundTracker.getTimestampFn = () => {
+                return this.mainStopwatch.getCurrentTimestamp();
+            };
+            console.log('✅ Background tracker timestamp coordinated');
+        }
+    }
+
+    coordinateLockScreenTracker() {
+        if (window.dtLogger?.lockScreenTracker) {
+            window.dtLogger.lockScreenTracker.getTimestampFn = () => {
+                return this.mainStopwatch.getCurrentTimestamp();
+            };
+            console.log('✅ Lock screen tracker timestamp coordinated');
+        }
+    }
+
+    coordinateInfinityManager() {
+        if (window.dtLogger?.infinityManager) {
+            // Ensure infinity mode uses unified timestamp
+            window.dtLogger.infinityManager.getTimestampFn = () => {
+                return this.mainStopwatch.getCurrentTimestamp();
+            };
+            console.log('✅ Infinity manager timestamp coordinated');
+        }
+    }
+
+    coordinateProcessors() {
+        if (window.dtLogger?.realTimeProcessor) {
+            window.dtLogger.realTimeProcessor.getTimestampFn = () => {
+                return this.mainStopwatch.getCurrentTimestamp();
+            };
+            
+            if (window.dtLogger.realTimeProcessor.distanceCalculator) {
+                window.dtLogger.realTimeProcessor.distanceCalculator.getTimestampFn = () => {
+                    return this.mainStopwatch.getCurrentTimestamp();
+                };
+            }
+            console.log('✅ Real-time processor timestamp coordinated');
+        }
+
+        if (window.dtLogger?.unlimitedProcessor) {
+            window.dtLogger.unlimitedProcessor.getTimestampFn = () => {
+                return this.mainStopwatch.getCurrentTimestamp();
+            };
+            console.log('✅ Unlimited processor timestamp coordinated');
+        }
+    }
+
+    getUnifiedTimestamp() {
+        return this.mainStopwatch.getCurrentTimestamp();
+    }
+
+    getFormattedTime() {
+        return this.mainStopwatch.getFormattedTime();
+    }
+
+    // Method untuk debug integrasi
+    debugIntegration() {
+        console.group('🔍 Unified Timestamp Integration Debug');
+        console.log('Stopwatch running:', this.mainStopwatch.isRunning);
+        console.log('Stopwatch time:', this.getFormattedTime());
+        console.log('Stopwatch timestamp:', this.getUnifiedTimestamp());
+        
+        // Check component integration
+        const components = [
+            'backgroundTracker', 
+            'lockScreenTracker', 
+            'infinityManager',
+            'realTimeProcessor',
+            'unlimitedProcessor'
+        ];
+        
+        components.forEach(comp => {
+            const component = window.dtLogger?.[comp];
+            if (component) {
+                console.log(`${comp}:`, {
+                    hasTimestampFn: !!component.getTimestampFn,
+                    usesUnified: component.getTimestampFn === this.getUnifiedTimestamp
+                });
+            }
+        });
+        console.groupEnd();
+    }
+}
+// ===== COMPONENT COORDINATOR =====
+class ComponentCoordinator {
+    constructor() {
+        this.components = new Map();
+        this.initializationOrder = [
+            'timestampManager',
+            'backgroundTracker', 
+            'lockScreenTracker',
+            'infinityManager',
+            'processors',
+            'syncManager',
+            'backgroundPoller',
+            'unlimitedOperationManager'
+        ];
+        this.initializationStatus = new Map();
+        this.crossComponentEvents = new Map();
+        this.isInitializing = false;
+    }
+
+    async initializeAllComponents(logger) {
+        if (this.isInitializing) {
+            console.log('🔄 Component initialization already in progress...');
+            return;
+        }
+
+        this.isInitializing = true;
+        console.log('🔄 Initializing all components with coordination...');
+        
+        try {
+            // 1. Initialize Unified Timestamp Manager first
+            if (!logger.unifiedTimestampManager) {
+                logger.unifiedTimestampManager = new UnifiedTimestampManager();
+            }
+            await logger.unifiedTimestampManager.initialize();
+            this.initializationStatus.set('timestampManager', 'initialized');
+
+            // 2. Initialize components in proper order
+            for (const componentType of this.initializationOrder) {
+                await this.initializeComponentType(componentType, logger);
+            }
+            
+            // 3. Setup cross-component event handling
+            await this.setupCrossComponentEvents(logger);
+            
+            // 4. Verify integration
+            const integrationVerified = this.verifyIntegration(logger);
+            
+            if (integrationVerified) {
+                logger.integrationStatus = 'fully_integrated';
+                console.log('🎉 All components initialized and coordinated successfully');
+                
+                // Start integration monitoring
+                this.startIntegrationMonitoring(logger);
+            } else {
+                logger.integrationStatus = 'partially_integrated';
+                console.warn('⚠️ System integration partially completed');
+            }
+            
+        } catch (error) {
+            logger.integrationStatus = 'integration_failed';
+            console.error('❌ Component initialization failed:', error);
+            throw error;
+        } finally {
+            this.isInitializing = false;
+        }
+    }
+
+    async initializeComponentType(type, logger) {
+        console.log(`🔧 Initializing ${type}...`);
+        
+        try {
+            switch (type) {
+                case 'timestampManager':
+                    // Already initialized above
+                    break;
+                    
+                case 'backgroundTracker':
+                    await this.initializeBackgroundTracker(logger);
+                    break;
+                    
+                case 'lockScreenTracker':
+                    await this.initializeLockScreenTracker(logger);
+                    break;
+                    
+                case 'infinityManager':
+                    await this.initializeInfinityManager(logger);
+                    break;
+                    
+                case 'processors':
+                    await this.initializeProcessors(logger);
+                    break;
+                    
+                case 'syncManager':
+                    await this.initializeSyncManager(logger);
+                    break;
+                    
+                case 'backgroundPoller':
+                    await this.initializeBackgroundPoller(logger);
+                    break;
+                    
+                case 'unlimitedOperationManager':
+                    await this.initializeUnlimitedOperationManager(logger);
+                    break;
+                    
+                default:
+                    console.warn(`⚠️ Unknown component type: ${type}`);
+            }
+            
+            this.initializationStatus.set(type, 'initialized');
+            console.log(`✅ ${type} initialized successfully`);
+            
+        } catch (error) {
+            this.initializationStatus.set(type, 'failed');
+            console.error(`❌ Failed to initialize ${type}:`, error);
+            throw error;
+        }
+    }
+
+    async initializeBackgroundTracker(logger) {
+        if (!logger.backgroundTracker) {
+            logger.backgroundTracker = new EnhancedBackgroundTracker(logger);
+        }
+        
+        // Integrate with unified timestamp
+        logger.backgroundTracker.getTimestampFn = () => {
+            return logger.unifiedTimestampManager.getUnifiedTimestamp();
+        };
+        
+        // Store reference for coordination
+        this.components.set('backgroundTracker', logger.backgroundTracker);
+    }
+
+    async initializeLockScreenTracker(logger) {
+        if (!logger.lockScreenTracker) {
+            logger.lockScreenTracker = new LockScreenGPSTracker(logger);
+        }
+        
+        // Integrate with unified timestamp
+        logger.lockScreenTracker.getTimestampFn = () => {
+            return logger.unifiedTimestampManager.getUnifiedTimestamp();
+        };
+        
+        // Store reference for coordination
+        this.components.set('lockScreenTracker', logger.lockScreenTracker);
+    }
+
+    async initializeInfinityManager(logger) {
+        if (!logger.infinityManager) {
+            logger.infinityManager = new InfinityTrackingManager(logger);
+        }
+        
+        // Load previous state if any
+        const stateLoaded = logger.infinityManager.loadInfinityState();
+        if (stateLoaded) {
+            console.log('♾️ Previous infinity state loaded');
+        }
+        
+        this.components.set('infinityManager', logger.infinityManager);
+    }
+
+    async initializeProcessors(logger) {
+        // Ensure processors use unified timestamp
+        if (logger.realTimeProcessor) {
+            logger.realTimeProcessor.getTimestampFn = () => {
+                return logger.unifiedTimestampManager.getUnifiedTimestamp();
+            };
+            
+            if (logger.realTimeProcessor.distanceCalculator) {
+                logger.realTimeProcessor.distanceCalculator.getTimestampFn = () => {
+                    return logger.unifiedTimestampManager.getUnifiedTimestamp();
+                };
+            }
+        }
+        
+        if (logger.unlimitedProcessor) {
+            logger.unlimitedProcessor.getTimestampFn = () => {
+                return logger.unifiedTimestampManager.getUnifiedTimestamp();
+            };
+        }
+        
+        this.components.set('realTimeProcessor', logger.realTimeProcessor);
+        this.components.set('unlimitedProcessor', logger.unlimitedProcessor);
+    }
+
+    async initializeSyncManager(logger) {
+        if (!logger.syncManager) {
+            logger.syncManager = new IntelligentSyncManager();
+        }
+        
+        this.components.set('syncManager', logger.syncManager);
+    }
+
+    async initializeBackgroundPoller(logger) {
+        if (!logger.backgroundPoller) {
+            logger.backgroundPoller = new InfinityGPSPoller(logger, { 
+                pollDelay: 100,
+                enableHighAccuracy: true,
+                maximumAge: 0,
+                timeout: 0
+            });
+        }
+        
+        this.components.set('backgroundPoller', logger.backgroundPoller);
+    }
+
+    async initializeUnlimitedOperationManager(logger) {
+        if (!logger.unlimitedOperationManager) {
+            logger.unlimitedOperationManager = new UnlimitedOperationManager(logger);
+        }
+        
+        this.components.set('unlimitedOperationManager', logger.unlimitedOperationManager);
+    }
+
+    async setupCrossComponentEvents(logger) {
+        console.log('🔗 Setting up cross-component events...');
+        
+        try {
+            await this.setupBackgroundToLockScreenEvents(logger);
+            await this.setupLockScreenToInfinityEvents(logger);
+            await this.setupInfinityToProcessorsEvents(logger);
+            await this.setupVisibilityCoordination(logger);
+            await this.setupNetworkCoordination(logger);
+            
+            console.log('✅ Cross-component events setup completed');
+        } catch (error) {
+            console.error('❌ Failed to setup cross-component events:', error);
+            throw error;
+        }
+    }
+
+    async setupBackgroundToLockScreenEvents(logger) {
+        if (logger.backgroundTracker && logger.lockScreenTracker) {
+            // Override background detection to coordinate with lock screen
+            const originalHandleVisibility = logger.backgroundTracker.handleVisibilityChange?.bind(logger.backgroundTracker);
+            
+            logger.backgroundTracker.handleVisibilityChange = () => {
+                const isBackground = document.hidden;
+                const timestamp = logger.unifiedTimestampManager.getFormattedTime();
+                
+                console.log(`👀 Visibility change: ${isBackground ? 'background' : 'foreground'} at ${timestamp}`);
+                
+                if (isBackground) {
+                    // Entering background - activate lock screen detection
+                    console.log('🔒 Activating lock screen tracker (background detected)');
+                    logger.lockScreenTracker.enterLockScreenMode();
+                } else {
+                    // Returning to foreground - deactivate lock screen
+                    console.log('📱 Deactivating lock screen tracker (foreground detected)');
+                    logger.lockScreenTracker.exitLockScreenMode();
+                }
+                
+                // Call original handler if exists
+                if (originalHandleVisibility) {
+                    originalHandleVisibility();
+                }
+            };
+            
+            this.crossComponentEvents.set('backgroundToLockScreen', 'active');
+        }
+    }
+
+    async setupLockScreenToInfinityEvents(logger) {
+        if (logger.lockScreenTracker && logger.infinityManager) {
+            const originalEnterLockScreen = logger.lockScreenTracker.enterLockScreenMode?.bind(logger.lockScreenTracker);
+            const originalExitLockScreen = logger.lockScreenTracker.exitLockScreenMode?.bind(logger.lockScreenTracker);
+            
+            logger.lockScreenTracker.enterLockScreenMode = function() {
+                console.log('🔒 Lock screen activated - enabling infinity mode');
+                
+                // Enable infinity mode when lock screen activates
+                if (logger.infinityManager && !logger.infinityManager.isInfinityMode) {
+                    logger.infinityManager.enableInfinityMode();
+                }
+                
+                // Start background poller aggressively
+                if (logger.backgroundPoller && !logger.backgroundPoller.isPolling) {
+                    logger.backgroundPoller.start();
+                }
+                
+                return originalEnterLockScreen ? originalEnterLockScreen() : Promise.resolve();
+            };
+            
+            logger.lockScreenTracker.exitLockScreenMode = function() {
+                console.log('📱 Lock screen deactivated - adjusting infinity mode');
+                
+                // We don't necessarily disable infinity mode when exiting lock screen
+                // as the app might still be in background
+                
+                return originalExitLockScreen ? originalExitLockScreen() : Promise.resolve();
+            };
+            
+            this.crossComponentEvents.set('lockScreenToInfinity', 'active');
+        }
+    }
+
+    async setupInfinityToProcessorsEvents(logger) {
+        if (logger.infinityManager) {
+            // Store reference to original methods
+            const originalEnableInfinity = logger.infinityManager.enableInfinityMode?.bind(logger.infinityManager);
+            const originalDisableInfinity = logger.infinityManager.disableInfinityMode?.bind(logger.infinityManager);
+            
+            // Override infinity mode methods to coordinate processors
+            logger.infinityManager.enableInfinityMode = function() {
+                console.log('♾️ Infinity mode enabling - optimizing processors');
+                
+                // Switch to unlimited processor for infinity mode
+                if (logger.unlimitedProcessor) {
+                    logger.useUnlimitedProcessor = true;
+                    logger.activeProcessor = logger.unlimitedProcessor;
+                    console.log('🔄 Switched to unlimited processor for infinity mode');
+                }
+                
+                // Start unlimited operation manager
+                if (logger.unlimitedOperationManager) {
+                    console.log('🔄 Unlimited operation manager activated');
+                }
+                
+                return originalEnableInfinity ? originalEnableInfinity() : Promise.resolve();
+            };
+            
+            logger.infinityManager.disableInfinityMode = function() {
+                console.log('⚡ Infinity mode disabling - using real-time processor');
+                
+                // Switch back to real-time processor
+                if (logger.realTimeProcessor) {
+                    logger.useUnlimitedProcessor = false;
+                    logger.activeProcessor = logger.realTimeProcessor;
+                    console.log('🔄 Switched to real-time processor');
+                }
+                
+                return originalDisableInfinity ? originalDisableInfinity() : Promise.resolve();
+            };
+            
+            this.crossComponentEvents.set('infinityToProcessors', 'active');
+        }
+    }
+
+    async setupVisibilityCoordination(logger) {
+        // Centralized visibility change handler
+        const handleGlobalVisibilityChange = () => {
+            const isBackground = document.hidden;
+            const timestamp = logger.unifiedTimestampManager.getFormattedTime();
+            
+            console.log(`🌐 Global visibility change: ${isBackground ? 'background' : 'foreground'} at ${timestamp}`);
+            
+            // Coordinate all components on visibility change
+            if (isBackground) {
+                // Entering background - optimize all components
+                if (logger.infinityManager && !logger.infinityManager.isInfinityMode) {
+                    logger.infinityManager.enableInfinityMode();
+                }
+                
+                if (logger.backgroundPoller && !logger.backgroundPoller.isPolling) {
+                    logger.backgroundPoller.start();
+                }
+                
+            } else {
+                // Returning to foreground - check if we need to adjust
+                // Note: We don't automatically disable infinity mode as it might still be needed
+                logger.updateAllDisplays();
+            }
+        };
+
+        document.addEventListener('visibilitychange', handleGlobalVisibilityChange);
+        this.crossComponentEvents.set('globalVisibility', 'active');
+    }
+
+    async setupNetworkCoordination(logger) {
+        // Coordinate components on network changes
+        const handleOnline = () => {
+            console.log('🌐 Network online - coordinating components');
+            logger.isOnline = true;
+            logger.updateConnectionStatus(true);
+            
+            // Trigger sync when coming online
+            setTimeout(() => {
+                if (logger.syncManager) {
+                    logger.syncManager.triggerSmartSync();
+                }
+                if (logger.offlineQueue) {
+                    logger.offlineQueue.processQueue();
+                }
+            }, 2000);
+        };
+
+        const handleOffline = () => {
+            console.log('📴 Network offline - coordinating components');
+            logger.isOnline = false;
+            logger.updateConnectionStatus(false);
+            
+            // Ensure infinity mode is active when offline
+            if (logger.infinityManager && !logger.infinityManager.isInfinityMode) {
+                logger.infinityManager.enableInfinityMode();
+            }
+        };
+
+        window.addEventListener('online', handleOnline);
+        window.addEventListener('offline', handleOffline);
+        this.crossComponentEvents.set('networkCoordination', 'active');
+    }
+
+    startIntegrationMonitoring(logger) {
+        // Monitor integration health every 30 seconds
+        setInterval(() => {
+            this.monitorIntegrationHealth(logger);
+        }, 30000);
+
+        // Detailed health check every 2 minutes
+        setInterval(() => {
+            this.detailedHealthCheck(logger);
+        }, 120000);
+
+        console.log('📊 Integration monitoring started');
+    }
+
+    monitorIntegrationHealth(logger) {
+        const health = {
+            timestamp: new Date().toISOString(),
+            unifiedTime: logger.unifiedTimestampManager?.getFormattedTime() || 'N/A',
+            integrationStatus: logger.integrationStatus || 'unknown',
+            components: {}
+        };
+
+        // Check each component's health
+        this.initializationOrder.forEach(componentType => {
+            const component = logger[componentType];
+            health.components[componentType] = {
+                initialized: this.initializationStatus.get(componentType) === 'initialized',
+                exists: !!component,
+                active: this.getComponentActiveStatus(componentType, logger),
+                integrated: this.isComponentIntegrated(componentType, logger)
+            };
+        });
+
+        // Log health status periodically
+        if (Date.now() % 60000 < 1000) { // Every minute
+            console.log('🏥 Integration Health Check:', health);
+        }
+
+        return health;
+    }
+
+    detailedHealthCheck(logger) {
+        console.group('🔍 Detailed Integration Health Check');
+        
+        const health = this.monitorIntegrationHealth(logger);
+        
+        // Check cross-component events
+        console.log('Cross-component events:', Object.fromEntries(this.crossComponentEvents));
+        
+        // Check timestamp synchronization
+        if (logger.unifiedTimestampManager) {
+            const unifiedTime = logger.unifiedTimestampManager.getUnifiedTimestamp();
+            console.log('Unified timestamp:', unifiedTime);
+            
+            // Verify component timestamp synchronization
+            this.verifyTimestampSynchronization(logger, unifiedTime);
+        }
+        
+        console.groupEnd();
+        
+        return health;
+    }
+
+    verifyTimestampSynchronization(logger, expectedTimestamp) {
+        const componentsToCheck = [
+            'backgroundTracker',
+            'lockScreenTracker', 
+            'realTimeProcessor',
+            'unlimitedProcessor'
+        ];
+
+        let allSynchronized = true;
+        
+        componentsToCheck.forEach(componentName => {
+            const component = logger[componentName];
+            if (component && component.getTimestampFn) {
+                const componentTime = component.getTimestampFn();
+                const isSynchronized = componentTime === expectedTimestamp;
+                
+                if (!isSynchronized) {
+                    console.warn(`❌ ${componentName} timestamp not synchronized:`, {
+                        expected: expectedTimestamp,
+                        actual: componentTime,
+                        difference: expectedTimestamp - componentTime
+                    });
+                    allSynchronized = false;
+                }
+            }
+        });
+
+        if (allSynchronized) {
+            console.log('✅ All component timestamps are synchronized');
+        }
+        
+        return allSynchronized;
+    }
+
+    getComponentActiveStatus(componentName, logger) {
+        const component = logger[componentName];
+        if (!component) return false;
+
+        switch (componentName) {
+            case 'backgroundTracker':
+                return component.isActive || false;
+            case 'lockScreenTracker':
+                return component.lockScreenMode || false;
+            case 'infinityManager':
+                return component.isInfinityMode || false;
+            case 'backgroundPoller':
+                return component.isPolling || false;
+            case 'realTimeProcessor':
+                return logger.activeProcessor === component;
+            case 'unlimitedProcessor':
+                return logger.activeProcessor === component;
+            case 'unlimitedOperationManager':
+                return true; // Always considered active once initialized
+            case 'syncManager':
+                return true; // Always considered active
+            default:
+                return !!component;
+        }
+    }
+
+    isComponentIntegrated(componentName, logger) {
+        const component = logger[componentName];
+        if (!component) return false;
+
+        // Check if component uses unified timestamp
+        if (component.getTimestampFn) {
+            const unifiedTime = logger.unifiedTimestampManager?.getUnifiedTimestamp();
+            const componentTime = component.getTimestampFn();
+            return componentTime === unifiedTime;
+        }
+
+        // For components without timestamp function, check if they're properly referenced
+        return this.components.has(componentName);
+    }
+
+    // Method untuk memverifikasi integrasi
+    verifyIntegration(logger) {
+        console.group('🔍 Integration Verification');
+        
+        const checks = [
+            {
+                name: 'Unified Timestamp Manager',
+                status: !!logger.unifiedTimestampManager,
+                details: logger.unifiedTimestampManager ? 'Initialized' : 'Missing'
+            },
+            {
+                name: 'Background Tracker Integration',
+                status: this.isComponentIntegrated('backgroundTracker', logger),
+                details: logger.backgroundTracker ? 'Integrated' : 'Not integrated'
+            },
+            {
+                name: 'Lock Screen Tracker Integration',
+                status: this.isComponentIntegrated('lockScreenTracker', logger),
+                details: logger.lockScreenTracker ? 'Integrated' : 'Not integrated'
+            },
+            {
+                name: 'Processors Integration',
+                status: this.isComponentIntegrated('realTimeProcessor', logger),
+                details: 'Real-time: ' + (this.isComponentIntegrated('realTimeProcessor', logger) ? 'Yes' : 'No')
+            },
+            {
+                name: 'Cross-Component Events',
+                status: this.crossComponentEvents.size > 0,
+                details: `${this.crossComponentEvents.size} active event channels`
+            },
+            {
+                name: 'All Components Initialized',
+                status: Array.from(this.initializationStatus.values()).every(status => status === 'initialized'),
+                details: `${Array.from(this.initializationStatus.values()).filter(s => s === 'initialized').length}/${this.initializationOrder.length} initialized`
+            }
+        ];
+
+        let allPassed = true;
+        checks.forEach(check => {
+            console.log(`${check.status ? '✅' : '❌'} ${check.name}: ${check.details}`);
+            if (!check.status) allPassed = false;
+        });
+
+        console.groupEnd();
+        return allPassed;
+    }
+
+    // Emergency recovery method
+    async emergencyRecovery(logger) {
+        console.warn('🚨 Performing emergency integration recovery...');
+        
+        try {
+            // Reset all components
+            this.initializationStatus.clear();
+            this.crossComponentEvents.clear();
+            this.components.clear();
+            
+            // Re-initialize all components
+            await this.initializeAllComponents(logger);
+            
+            console.log('✅ Emergency recovery completed');
+            return true;
+        } catch (error) {
+            console.error('❌ Emergency recovery failed:', error);
+            return false;
+        }
+    }
+
+    // Get coordination status for debugging
+    getCoordinationStatus() {
+        return {
+            initializationStatus: Object.fromEntries(this.initializationStatus),
+            crossComponentEvents: Object.fromEntries(this.crossComponentEvents),
+            coordinatedComponents: Array.from(this.components.keys()),
+            isInitializing: this.isInitializing
+        };
+    }
+}
+
+// ===== MODIFIED ENHANCED GPS LOGGER WITH PROPER INTEGRATION =====
+class EnhancedDTGPSLoggerWithIntegration extends EnhancedDTGPSLogger {
+    constructor() {
+        super();
+        
+        this.unifiedTimestampManager = new UnifiedTimestampManager();
+        this.componentCoordinator = new ComponentCoordinator();
+        
+        this.integrationStatus = 'not_initialized';
+        this.setupIntegratedSystem();
+    }
+
+    async setupIntegratedSystem() {
+        try {
+            console.log('🔄 Setting up integrated GPS tracking system...');
+            
+            // Initialize all components with coordination
+            await this.componentCoordinator.initializeAllComponents(this);
+            
+            // Verify integration
+            const integrationVerified = this.componentCoordinator.verifyIntegration(this);
+            
+            if (integrationVerified) {
+                this.integrationStatus = 'fully_integrated';
+                console.log('🎉 Integrated system setup completed successfully');
+                
+                // Start integration monitoring
+                this.startIntegrationMonitoring();
+            } else {
+                this.integrationStatus = 'partially_integrated';
+                console.warn('⚠️ System integration partially completed');
+            }
+            
+        } catch (error) {
+            this.integrationStatus = 'integration_failed';
+            console.error('❌ Integrated system setup failed:', error);
+        }
+    }
+
+    startIntegrationMonitoring() {
+        // Monitor integration health every 30 seconds
+        setInterval(() => {
+            this.checkIntegrationHealth();
+        }, 30000);
+    }
+
+    checkIntegrationHealth() {
+        const health = {
+            timestamp: this.unifiedTimestampManager.getFormattedTime(),
+            integrationStatus: this.integrationStatus,
+            components: {}
+        };
+
+        // Check each component's health
+        const components = [
+            'backgroundTracker',
+            'lockScreenTracker', 
+            'infinityManager',
+            'realTimeProcessor',
+            'unlimitedProcessor'
+        ];
+
+        components.forEach(comp => {
+            const component = this[comp];
+            health.components[comp] = {
+                exists: !!component,
+                integrated: component?.getTimestampFn !== undefined,
+                active: this.getComponentActiveStatus(comp)
+            };
+        });
+
+        // Log health status periodically
+        if (Date.now() % 120000 < 1000) { // Every 2 minutes
+            console.log('🏥 Integration Health Check:', health);
+        }
+
+        return health;
+    }
+
+    getComponentActiveStatus(componentName) {
+        switch (componentName) {
+            case 'backgroundTracker':
+                return this.backgroundTracker?.isActive || false;
+            case 'lockScreenTracker':
+                return this.lockScreenTracker?.lockScreenMode || false;
+            case 'infinityManager':
+                return this.infinityManager?.isInfinityMode || false;
+            case 'realTimeProcessor':
+                return this.activeProcessor === this.realTimeProcessor;
+            case 'unlimitedProcessor':
+                return this.activeProcessor === this.unlimitedProcessor;
+            default:
+                return false;
+        }
+    }
+
+    // Override startJourney dengan integrated approach
+    async startJourney() {
+        if (!this.driverData) {
+            this.addLog('Silakan login terlebih dahulu', 'error');
+            return;
+        }
+
+        console.log('🔄 Starting journey with integrated system...');
+        
+        // Ensure all components are ready
+        if (this.integrationStatus !== 'fully_integrated') {
+            await this.setupIntegratedSystem();
+        }
+
+        this.journeyStatus = 'started';
+        this.sessionStartTime = new Date();
+        this.totalDistance = 0;
+        this.dataPoints = 0;
+
+        // Start unified timestamp system
+        this.unifiedTimestampManager.initialize();
+        
+        // Start all coordinated components
+        await this.startAllIntegratedComponents();
+
+        this.resetRealTimeTracking();
+        this.startRealGPSTracking();
+        this.startDataTransmission();
+
+        this.addLog('PERJALANAN DIMULAI - SISTEM TERINTEGRASI AKTIF', 'success');
+        this.updateJourneyDisplay();
+    }
+
+    async startAllIntegratedComponents() {
+        // Start background tracking
+        if (this.backgroundTracker) {
+            this.backgroundTracker.start();
+        }
+        
+        // Start lock screen detection
+        if (this.lockScreenTracker) {
+            this.lockScreenTracker.start();
+        }
+        
+        // Enable infinity mode
+        if (this.infinityManager) {
+            this.infinityManager.enableInfinityMode();
+        }
+        
+        // Start background poller
+        if (this.backgroundPoller) {
+            this.backgroundPoller.start();
+        }
+
+        console.log('✅ All integrated components started');
+    }
+
+    // Enhanced handleGPSPosition dengan integrated timestamp
+    handleGPSPosition(position, options = {}) {
+        if (!position || !position.coords) return;
+
+        const { source = 'watch', forceBackground = false, forceOffline = false } = options;
+
+        if (source === 'background' && this.isDuplicatePosition(position)) {
+            return;
+        }
+
+        this.healthMetrics.gpsUpdates++;
+
+        const isBackground = forceBackground || document.hidden;
+        const isOffline = forceOffline || !navigator.onLine;
+
+        try {
+            // Gunakan unified timestamp untuk semua processing
+            const unifiedTimestamp = this.unifiedTimestampManager.getUnifiedTimestamp();
+            
+            const processedData = this.activeProcessor.processPosition(position, {
+                background: isBackground,
+                offline: isOffline,
+                source: source,
+                unifiedTimestamp: unifiedTimestamp // Pass unified timestamp
+            });
+            
+            if (processedData) {
+                this.currentSpeed = processedData.speed;
+                this.totalDistance = processedData.totalDistance;
+                this.lastPosition = {
+                    lat: position.coords.latitude,
+                    lng: position.coords.longitude,
+                    accuracy: position.coords.accuracy,
+                    bearing: position.coords.heading,
+                    timestamp: new Date(),
+                    unifiedTimestamp: unifiedTimestamp // Store unified timestamp
+                };
+                
+                this.updateRealTimeDisplay(processedData);
+                
+                // Log dengan unified timestamp
+                if (this.healthMetrics.gpsUpdates % 5 === 0) {
+                    console.log(`📊 GPS Update #${this.healthMetrics.gpsUpdates}:`, {
+                        processor: this.useUnlimitedProcessor ? 'Unlimited' : 'Real-time',
+                        speed: this.currentSpeed.toFixed(1) + ' km/h',
+                        totalDistance: this.totalDistance.toFixed(3) + ' km',
+                        background: isBackground,
+                        offline: isOffline,
+                        unifiedTime: this.unifiedTimestampManager.getFormattedTime(),
+                        lockScreen: this.lockScreenTracker?.lockScreenMode || false,
+                        infinity: this.infinityManager?.isInfinityMode || false
+                    });
+                }
+            }
+        } catch (error) {
+            console.error('❌ Error in integrated handleGPSPosition:', error);
+            this.addLog('Error memproses posisi GPS terintegrasi', 'error');
+        }
+    }
+
+    // Method untuk debug integrasi real-time
+    debugIntegratedSystem() {
+        console.group('🔍 INTEGRATED SYSTEM DEBUG');
+        
+        // Timestamp info
+        console.log('Unified Timestamp:', this.unifiedTimestampManager.getFormattedTime());
+        console.log('Integration Status:', this.integrationStatus);
+        
+        // Component status
+        console.log('Background Tracker:', this.backgroundTracker?.isActive ? 'Active' : 'Inactive');
+        console.log('Lock Screen Tracker:', this.lockScreenTracker?.lockScreenMode ? 'Lock Screen Active' : 'Normal');
+        console.log('Infinity Manager:', this.infinityManager?.isInfinityMode ? 'Infinity Active' : 'Normal');
+        console.log('Active Processor:', this.useUnlimitedProcessor ? 'Unlimited' : 'Real-time');
+        
+        // Cross-check timestamps
+        const components = [
+            { name: 'Background', fn: this.backgroundTracker?.getTimestampFn },
+            { name: 'LockScreen', fn: this.lockScreenTracker?.getTimestampFn },
+            { name: 'RealTimeProc', fn: this.realTimeProcessor?.getTimestampFn },
+            { name: 'UnlimitedProc', fn: this.unlimitedProcessor?.getTimestampFn }
+        ];
+        
+        components.forEach(comp => {
+            if (comp.fn) {
+                const timestamp = comp.fn();
+                console.log(`${comp.name} Timestamp:`, timestamp, 
+                          `Match: ${timestamp === this.unifiedTimestampManager.getUnifiedTimestamp()}`);
+            }
+        });
+        
+        console.groupEnd();
+    }
+
+    getIntegratedStatus() {
+        return {
+            integration: {
+                status: this.integrationStatus,
+                timestamp: this.unifiedTimestampManager.getFormattedTime(),
+                health: this.checkIntegrationHealth()
+            },
+            components: {
+                background: this.backgroundTracker?.isActive || false,
+                lockScreen: this.lockScreenTracker?.lockScreenMode || false,
+                infinity: this.infinityManager?.isInfinityMode || false,
+                processor: this.useUnlimitedProcessor ? 'unlimited' : 'real-time'
+            },
+            performance: {
+                gpsUpdates: this.healthMetrics.gpsUpdates,
+                totalDistance: this.totalDistance,
+                currentSpeed: this.currentSpeed
+            }
+        };
+    }
+}
+
+// ===== MODIFIED INITIALIZATION =====
+document.addEventListener('DOMContentLoaded', function() {
+    console.log('🚀 Initializing ENHANCED GPS TRACKER WITH INTEGRATED SYSTEM...');
+    
+    try {
+        // Initialize dengan sistem terintegrasi
+        window.dtLogger = new EnhancedDTGPSLoggerWithIntegration();
+        console.log('✅ Enhanced GPS Tracker with Integrated System initialized');
+        
+        // Expose integration debugging methods
+        window.debugIntegration = () => window.dtLogger?.debugIntegratedSystem();
+        window.getIntegratedStatus = () => window.dtLogger?.getIntegratedStatus();
+        window.verifyIntegration = () => window.dtLogger?.componentCoordinator.verifyIntegration(window.dtLogger);
+        
+        // Auto-start integration monitoring
+        setTimeout(() => {
+            if (window.dtLogger) {
+                console.log('🔍 Performing initial integration verification...');
+                window.verifyIntegration();
+                
+                // Start periodic integration checks
+                setInterval(() => {
+                    window.dtLogger.checkIntegrationHealth();
+                }, 60000);
+            }
+        }, 5000);
+        
+    } catch (error) {
+        console.error('❌ Failed to initialize integrated system:', error);
+        
+        // Fallback to basic system
+        try {
+            console.log('🔄 Falling back to basic EnhancedDTGPSLogger...');
+            window.dtLogger = new EnhancedDTGPSLogger();
+        } catch (fallbackError) {
+            console.error('❌ Fallback also failed:', fallbackError);
+        }
+    }
+});
+
 
 class EnhancedBackgroundTracker {
     constructor(logger) {
