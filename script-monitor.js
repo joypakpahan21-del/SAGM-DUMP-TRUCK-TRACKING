@@ -872,7 +872,7 @@ updateDriverData(driverData) {
                     this.syncOfflineData();
                 }
             });
-            this.backgroundSyncInterval = setInterval(() => {
+            his.backgroundSyncInterval = setInterval(() => {
                 if (this.isOnline && this.offlineQueue.size > 0) {
                     this.syncOfflineData();
                 }
@@ -2738,6 +2738,73 @@ updateDriverData(driverData) {
             console.error('Chat system initialization failed:', chatError);
             this.logData('Sistem chat gagal diinisialisasi', 'warning');
         }
+    }
+    setupChatWindowBehavior() {
+        console.log('💬 Setting up chat window behavior...');
+        
+        try {
+            // Basic chat window behavior
+            this.setupBasicChatBehavior();
+            console.log('✅ Chat window behavior setup completed');
+        } catch (error) {
+            console.warn('⚠️ Chat window behavior setup failed:', error);
+        }
+    }
+    
+    setupBasicChatBehavior() {
+        // Simple auto-hide functionality
+        this.setupChatAutoHide();
+        
+        // Click outside to close
+        this.setupClickOutsideToClose();
+        
+        // Escape key to close
+        this.setupEscapeKeyClose();
+    }
+    
+    setupChatAutoHide() {
+        // Auto-hide chat setelah 10 menit tidak aktif
+        let chatTimeout;
+        const resetTimer = () => {
+            clearTimeout(chatTimeout);
+            if (this.isMonitorChatOpen) {
+                chatTimeout = setTimeout(() => {
+                    if (this.isMonitorChatOpen) {
+                        this.toggleMonitorChat();
+                        console.log('💬 Chat auto-hidden due to inactivity');
+                    }
+                }, 600000); // 10 menit
+            }
+        };
+    
+        // Reset timer pada interaksi user
+        const chatInput = document.getElementById('monitorChatInput');
+        const chatWindow = document.getElementById('monitorChatWindow');
+        
+        if (chatInput) {
+            chatInput.addEventListener('input', resetTimer);
+            chatInput.addEventListener('focus', resetTimer);
+        }
+        
+        if (chatWindow) {
+            chatWindow.addEventListener('mousemove', resetTimer);
+            chatWindow.addEventListener('click', resetTimer);
+        }
+    }
+    
+    setupClickOutsideToClose() {
+        // Sudah ditangani di method toggleMonitorChat, tambahkan log
+        console.log('✅ Click outside to close behavior initialized');
+    }
+    
+    setupEscapeKeyClose() {
+        // Close chat dengan Escape key
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' && this.isMonitorChatOpen) {
+                this.toggleMonitorChat();
+                console.log('💬 Chat closed with Escape key');
+            }
+        });
     }
 
     setupUnitChatListener(unitName) {
@@ -5198,4 +5265,3 @@ function sendChatMessage() {
         window.gpsSystem.sendChatMessage();
     }
 }
-
