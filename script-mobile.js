@@ -518,6 +518,8 @@ class ComponentCoordinator {
             
             logger.lockScreenTracker.enterLockScreenMode = function() {
                 console.log('🔒 Lock screen activated - enabling infinity mode');
+                notifyServiceWorkerLockscreenState(true, { reason: 'lock_screen_tracker_enter' });
+                requestInfinityBackgroundSync('lock-screen-enter');
                 
                 // Enable infinity mode when lock screen activates
                 if (logger.infinityManager && !logger.infinityManager.isInfinityMode) {
@@ -534,6 +536,8 @@ class ComponentCoordinator {
             
             logger.lockScreenTracker.exitLockScreenMode = function() {
                 console.log('📱 Lock screen deactivated - adjusting infinity mode');
+                notifyServiceWorkerLockscreenState(false, { reason: 'lock_screen_tracker_exit' });
+                requestInfinityBackgroundSync('lock-screen-exit');
                 
                 // We don't necessarily disable infinity mode when exiting lock screen
                 // as the app might still be in background
@@ -1305,63 +1309,147 @@ class HaversineDistanceSpeedCalculator {
 
 
 
-    calculateDistanceAndSpeed(currentPosition) {
+    calculateDistanceAndSpeed(currentPosition, context = {}) {
         if (!currentPosition || !currentPosition.lat || !currentPosition.lng) {
             return { distance: 0, speed: 0, totalDistance: this.totalDistance };
         }
     
-        const now = this.getTimestampFn();
+        const timestampFn = typeof this.getTimestampFn === 'function' ? this.getTimestampFn : () => Date.now();
+        const nowRaw = Number(timestampFn());
+        const now = Number.isFinite(nowRaw) ? nowRaw : Date.now();
         const currentPoint = {
             lat: currentPosition.lat,
             lng: currentPosition.lng,
-            timestamp: now
+            timestamp: now,
+            accuracy: currentPosition.accuracy || null,
+            source: context.source || 'unknown',
+            isBackground: context.background || document.hidden,
+            isOffline: context.offline || !navigator.onLine,
+            isLockScreen: context.lockScreen || false
         };
     
         let distance = 0;
         let speed = 0;
+        let quality = 'high';
     
-        // Jika ada posisi sebelumnya, hitung jarak dan kecepatan
+        // ✅ ENHANCED CALCULATION UNTUK BACKGROUND/OFFLINE/LOCKSCREEN
         if (this.lastPosition) {
-            // 1. HITUNG JARAK dengan Haversine
+            // 1. HITUNG JARAK dengan Haversine (lebih akurat)
             distance = this.calculateHaversineDistance(
                 this.lastPosition.lat, this.lastPosition.lng,
                 currentPoint.lat, currentPoint.lng
             );
-            const timeDiffMs = currentPoint.timestamp - this.lastPosition.timestamp;
+            
+            const lastTimestamp = Number.isFinite(this.lastPosition.timestamp)
+                ? this.lastPosition.timestamp
+                : now;
+            let timeDiffMs = currentPoint.timestamp - lastTimestamp;
+            if (!Number.isFinite(timeDiffMs)) {
+                timeDiffMs = 0;
+            }
+            if (timeDiffMs < 0) {
+                timeDiffMs = Math.abs(timeDiffMs);
+            }
             const timeDiffHours = timeDiffMs / 1000 / 3600;
+            const timeDiffSeconds = timeDiffMs / 1000;
     
+            // ✅ IMPROVED SPEED CALCULATION dengan akurasi tinggi
             if (timeDiffHours > 0.0000278) { // ~0.1 detik
                 speed = distance / timeDiffHours;
+                
+                // ✅ ADAPTIVE SPEED VALIDATION berdasarkan kondisi
+                if (currentPoint.isBackground || currentPoint.isOffline || currentPoint.isLockScreen) {
+                    // Di background/offline/lockscreen, gunakan smoothing lebih agresif
+                    if (this.currentSpeed > 0) {
+                        // Smoothing dengan weighted average untuk stabilitas
+                        const smoothingFactor = 0.7; // 70% dari speed sebelumnya
+                        speed = (speed * 0.3) + (this.currentSpeed * smoothingFactor);
+                    }
+                }
+                
                 speed = this.validateSpeed(speed);
+                
+                // ✅ QUALITY ASSESSMENT berdasarkan kondisi
+                if (currentPoint.accuracy && currentPoint.accuracy > 50) {
+                    quality = 'medium';
+                }
+                if (currentPoint.accuracy && currentPoint.accuracy > 100) {
+                    quality = 'low';
+                }
+                if (currentPoint.isOffline || currentPoint.isBackground) {
+                    quality = quality === 'high' ? 'medium' : quality;
+                }
             }
-            console.log(`📏 Distance Calc: ${(distance * 1000).toFixed(1)}m, Time: ${timeDiffMs}ms, Speed: ${speed.toFixed(1)}km/h`);
-            this.totalDistance += distance;
+            
+            // ✅ ENHANCED LOGGING dengan context
+            const contextInfo = [];
+            if (currentPoint.isBackground) contextInfo.push('BG');
+            if (currentPoint.isOffline) contextInfo.push('OFF');
+            if (currentPoint.isLockScreen) contextInfo.push('LS');
+            
+            console.log(`📏 [${contextInfo.join('/')}] Distance: ${(distance * 1000).toFixed(1)}m, Time: ${timeDiffMs}ms, Speed: ${speed.toFixed(1)}km/h, Quality: ${quality}`);
+            
+            // ✅ ACCUMULATE DISTANCE dengan quality check
+            if (distance > 0 && distance < 1) { // Validasi jarak realistis (< 1km per update)
+                this.totalDistance += distance;
+            } else if (distance >= 1) {
+                console.warn(`⚠️ Unrealistic distance detected: ${distance}km - skipping accumulation`);
+            }
         }
+    
+        distance = Number.isFinite(distance) ? distance : 0;
+        speed = Number.isFinite(speed) ? speed : 0;
     
         this.lastPosition = currentPoint;
         this.currentSpeed = speed;
     
-        // Simpan data ke localStorage SEBELUM return
+        // ✅ ENHANCED OFFLINE STORAGE dengan metadata lengkap
         const positionData = {
             lat: currentPosition.lat,
             lng: currentPosition.lng,
             timestamp: now,
             speed: speed,
             distance: distance,
+            totalDistance: this.totalDistance,
+            accuracy: currentPoint.accuracy,
+            quality: quality,
+            context: {
+                background: currentPoint.isBackground,
+                offline: currentPoint.isOffline,
+                lockScreen: currentPoint.isLockScreen,
+                source: currentPoint.source
+            },
             unit: this.unitNumber,
             driver: this.driverName
         };
     
-        const offlinePositions = JSON.parse(localStorage.getItem('offline_positions') || '[]');
-        offlinePositions.push(positionData);
-        localStorage.setItem('offline_positions', JSON.stringify(offlinePositions));
-
-        if (!navigator.onLine) {
-            navigator.serviceWorker.ready.then(registration => {
-                registration.sync.register('sync-positions')
-                    .then(() => console.log('🔄 Registered sync for offline positions'))
-                    .catch(err => console.error('Error registering sync:', err));
-            });
+        // ✅ MULTI-STORAGE STRATEGY untuk reliability
+        try {
+            const offlinePositions = JSON.parse(localStorage.getItem('offline_positions') || '[]');
+            offlinePositions.push(positionData);
+            
+            // ✅ LIMIT SIZE untuk prevent memory issues (keep last 10000 positions)
+            if (offlinePositions.length > 10000) {
+                offlinePositions.splice(0, offlinePositions.length - 10000);
+            }
+            
+            localStorage.setItem('offline_positions', JSON.stringify(offlinePositions));
+            
+            // ✅ NOTIFY SERVICE WORKER untuk sync
+            if (!navigator.onLine || currentPoint.isBackground || currentPoint.isLockScreen) {
+                if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
+                    navigator.serviceWorker.controller.postMessage({
+                        type: 'CACHE_GPS_DATA',
+                        data: positionData
+                    });
+                }
+                
+                // ✅ REGISTER BACKGROUND SYNC untuk infinity sync
+                requestInfinityBackgroundSync('position-cache');
+            }
+        } catch (storageError) {
+            console.error('❌ Storage error, but calculation continues:', storageError);
+            // Continue even if storage fails - infinity mode
         }
     
         return {
@@ -1370,7 +1458,9 @@ class HaversineDistanceSpeedCalculator {
             totalDistance: this.totalDistance,
             timestamp: now,
             lastPosition: this.lastPosition,
-            currentSpeed: this.currentSpeed
+            currentSpeed: this.currentSpeed,
+            quality: quality,
+            context: positionData.context
         };
     }
     
@@ -2022,6 +2112,96 @@ class InfinityGPSPoller {
     }
 }
 
+class StorageMutex {
+    constructor() {
+        this.locks = new Map();
+        this.pendingQueue = new Map();
+        this.defaultTimeout = 30000; // 30 detik untuk kondisi perkebunan
+        this.cleanupInterval = setInterval(() => this.cleanupStaleLocks(), 60000);
+    }
+
+    async acquire(resourceKey, timeout = this.defaultTimeout) {
+        const startTime = Date.now();
+        
+        while (this.isLocked(resourceKey)) {
+            if (Date.now() - startTime > timeout) {
+                console.warn(`⚠️ Mutex timeout for ${resourceKey}, forcing release`);
+                this.forceRelease(resourceKey);
+                break;
+            }
+            await this.delay(50 + Math.random() * 100);
+        }
+        
+        this.locks.set(resourceKey, {
+            locked: true,
+            timestamp: Date.now(),
+            threadId: this.generateThreadId()
+        });
+        
+        return () => this.release(resourceKey);
+    }
+
+    isLocked(resourceKey) {
+        const lock = this.locks.get(resourceKey);
+        if (!lock) return false;
+        
+        if (Date.now() - lock.timestamp > 30000) {
+            this.locks.delete(resourceKey);
+            return false;
+        }
+        
+        return lock.locked;
+    }
+
+    release(resourceKey) {
+        this.locks.delete(resourceKey);
+        
+        if (this.pendingQueue.has(resourceKey)) {
+            const pending = this.pendingQueue.get(resourceKey);
+            if (pending.length > 0) {
+                const resolve = pending.shift();
+                resolve();
+            }
+        }
+    }
+
+    forceRelease(resourceKey) {
+        console.warn(`🔄 Force releasing mutex: ${resourceKey}`);
+        this.locks.delete(resourceKey);
+        
+        if (this.pendingQueue.has(resourceKey)) {
+            const pending = this.pendingQueue.get(resourceKey);
+            pending.forEach(resolve => resolve());
+            this.pendingQueue.delete(resourceKey);
+        }
+    }
+
+    generateThreadId() {
+        return `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    }
+
+    cleanupStaleLocks() {
+        const now = Date.now();
+        for (const [key, lock] of this.locks.entries()) {
+            if (now - lock.timestamp > 30000) {
+                this.locks.delete(key);
+                console.warn(`🔄 Auto-released stale lock: ${key}`);
+            }
+        }
+    }
+
+    delay(ms) {
+        return new Promise(resolve => setTimeout(resolve, ms));
+    }
+
+    destroy() {
+        clearInterval(this.cleanupInterval);
+        this.locks.clear();
+        this.pendingQueue.clear();
+    }
+}
+
+
 class LockScreenGPSTracker {
     constructor(logger, options = {}) {
         this.logger = logger;
@@ -2057,6 +2237,9 @@ class LockScreenGPSTracker {
             forceContinueOnStorageFull: true,             // ✅ CONTINUE EVEN IF STORAGE FULL
             infiniteRetryMode: true                       // ✅ RETRY FOREVER
         };
+
+        this.storageMutex = new StorageMutex();
+        this.positionMutex = new StorageMutex();
 
         // ✅ STATE MANAGEMENT
         this.isActive = false;
@@ -2796,6 +2979,8 @@ class InfinityTrackingManager {
         
         this.lockScreenMode = active;
         console.log(`🔒 Lock Screen Mode: ${active ? 'ACTIVE' : 'INACTIVE'}`);
+        notifyServiceWorkerLockscreenState(active, { reason: 'infinity_manager_lock_screen' });
+        requestInfinityBackgroundSync(active ? 'infinity-lockscreen-on' : 'infinity-lockscreen-off');
         
         // ✅ IMMEDIATE ADAPTATION
         this.updateSaveInterval();
@@ -3271,16 +3456,9 @@ class InfinityTrackingManager {
     // ✅ INFINITY SYNC SYSTEMS
     startInfinitySync() {
         // Register background sync untuk infinity mode
-        if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
-            navigator.serviceWorker.ready.then(registration => {
-                registration.sync.register('infinity-gps-sync')
-                    .then(() => console.log('♾️ Infinity sync registered'))
-                    .catch(err => {
-                        console.error('Infinity sync registration failed:', err);
-                        this.scheduleSyncRetry();
-                    });
-            });
-        }
+        requestInfinityBackgroundSync('infinity-manager-start', {
+            onError: () => this.scheduleSyncRetry()
+        });
     }
 
     registerInfinitySync() {
@@ -7033,6 +7211,234 @@ class FirebaseCleanupManager {
         console.log('🧹 Cleanup history cleared');
     }
 }
+
+class NonBlockingBatchProcessor {
+    constructor(options = {}) {
+        this.config = {
+            maxBatchSize: Infinity,
+            delayBetweenBatches: 0,
+            concurrencyLimit: Infinity,
+            progressCallback: options.progressCallback || null,
+            adaptiveMode: true,
+            memoryAware: true,
+            networkAware: true
+        };
+        
+        this.isProcessing = false;
+        this.currentBatch = 0;
+        this.totalBatches = 0;
+        this.processingQueue = [];
+        this.memoryMonitor = setInterval(() => this.monitorMemory(), 10000);
+    }
+
+    getAdaptiveBatchSize() {
+        if (!this.config.adaptiveMode) return Infinity;
+        
+        const memoryPressure = this.getMemoryPressure();
+        const networkStatus = this.getNetworkStatus();
+        
+        if (memoryPressure > 0.9) return 100;
+        if (memoryPressure > 0.8) return 500;
+        if (networkStatus === 'poor') return 200;
+        if (networkStatus === 'average') return 1000;
+        if (networkStatus === 'good') return 5000;
+        
+        return Infinity;
+    }
+
+    getMemoryPressure() {
+        if (performance.memory) {
+            return performance.memory.usedJSHeapSize / performance.memory.jsHeapSizeLimit;
+        }
+        return 0.5;
+    }
+
+    getNetworkStatus() {
+        if (!navigator.onLine) return 'offline';
+        if (navigator.connection) {
+            const conn = navigator.connection;
+            if (conn.effectiveType === '4g') return 'good';
+            if (conn.effectiveType === '3g') return 'average';
+            if (conn.effectiveType === '2g') return 'poor';
+        }
+        return 'unknown';
+    }
+
+    async processLargeDataset(items, processorFn) {
+        if (this.isProcessing) {
+            console.warn('⚠️ Processor already running, queuing new request');
+            this.processingQueue.push({ items, processorFn });
+            return;
+        }
+
+        this.isProcessing = true;
+        this.currentBatch = 0;
+        
+        try {
+            const adaptiveBatchSize = this.getAdaptiveBatchSize();
+            this.totalBatches = Math.ceil(items.length / adaptiveBatchSize);
+            
+            console.log(`🔄 Processing ${items.length} items with adaptive batch size: ${adaptiveBatchSize}`);
+
+            const results = {
+                processed: 0,
+                failed: 0,
+                batches: 0,
+                errors: [],
+                processedItems: []
+            };
+
+            for (let i = 0; i < items.length; i += adaptiveBatchSize) {
+                if (!this.isProcessing) break;
+
+                const batchSize = Math.min(adaptiveBatchSize, items.length - i);
+                const batch = items.slice(i, i + batchSize);
+                this.currentBatch++;
+
+                this.updateProgress(i, items.length);
+
+                const batchResults = await this.processBatch(batch, processorFn);
+                results.processed += batchResults.processed;
+                results.failed += batchResults.failed;
+                results.batches++;
+                results.processedItems.push(...batchResults.processedItems);
+
+                if (batchResults.error) {
+                    results.errors.push(batchResults.error);
+                }
+
+                if (this.currentBatch % 10 === 0) {
+                    await this.yieldToMainThread();
+                }
+
+                if (this.config.memoryAware) {
+                    const currentMemoryPressure = this.getMemoryPressure();
+                    if (currentMemoryPressure > 0.9) {
+                        console.warn('⚠️ High memory pressure, increasing yield frequency');
+                        await this.yieldToMainThread();
+                    }
+                }
+            }
+
+            this.notifyCompletion(results);
+            return results;
+
+        } finally {
+            this.isProcessing = false;
+            this.processNextInQueue();
+        }
+    }
+
+    async processBatch(batch, processorFn) {
+        const batchResults = {
+            processed: 0,
+            failed: 0,
+            error: null,
+            processedItems: []
+        };
+
+        try {
+            const promises = batch.map(item => 
+                this.processItemSafe(item, processorFn)
+            );
+            
+            const results = await Promise.allSettled(promises);
+            
+            results.forEach((result, index) => {
+                if (result.status === 'fulfilled') {
+                    batchResults.processed++;
+                    batchResults.processedItems.push(result.value);
+                } else {
+                    batchResults.failed++;
+                    console.error('Batch item failed:', result.reason);
+                }
+            });
+            
+        } catch (error) {
+            batchResults.error = error;
+            console.error('Batch processing failed:', error);
+        }
+
+        return batchResults;
+    }
+
+    async processItemSafe(item, processorFn) {
+        try {
+            return await processorFn(item);
+        } catch (error) {
+            console.warn('Item processing failed, continuing:', error);
+            throw error;
+        }
+    }
+
+    async processNextInQueue() {
+        if (this.processingQueue.length > 0) {
+            const next = this.processingQueue.shift();
+            console.log(`📂 Processing next queue item (${this.processingQueue.length} remaining)`);
+            await this.processLargeDataset(next.items, next.processorFn);
+        }
+    }
+
+    async processInstantlyWhenOnline(items, processorFn) {
+        if (!navigator.onLine) {
+            console.log('📴 Offline - queuing for when online');
+            this.processingQueue.push({ items, processorFn });
+            return;
+        }
+
+        this.processingQueue.unshift({ items, processorFn });
+        
+        if (!this.isProcessing) {
+            await this.processNextInQueue();
+        }
+    }
+
+    updateProgress(processed, total) {
+        if (this.config.progressCallback) {
+            const percentage = ((processed / total) * 100).toFixed(1);
+            this.config.progressCallback({
+                processed,
+                total,
+                percentage,
+                currentBatch: this.currentBatch,
+                totalBatches: this.totalBatches
+            });
+        }
+    }
+
+    async yieldToMainThread() {
+        return new Promise(resolve => setTimeout(resolve, 0));
+    }
+
+    monitorMemory() {
+        if (this.config.memoryAware && performance.memory) {
+            const pressure = this.getMemoryPressure();
+            if (pressure > 0.95) {
+                console.warn('🚨 Critical memory pressure, consider pausing processing');
+            }
+        }
+    }
+
+    notifyCompletion(results) {
+        if (this.config.progressCallback) {
+            this.config.progressCallback({
+                completed: true,
+                ...results
+            });
+        }
+    }
+
+    stop() {
+        this.isProcessing = false;
+    }
+
+    destroy() {
+        this.isProcessing = false;
+        clearInterval(this.memoryMonitor);
+        this.processingQueue = [];
+        console.log('🛑 NonBlockingBatchProcessor destroyed');
+    }
+}
 class OfflineQueueManager {
     constructor() {
         // ✅ TRUE INFINITY CONFIG - ZERO LIMITATIONS
@@ -8466,319 +8872,7 @@ class LogoutManager {
 }
 
 // ===== MODIFIKASI UNLIMITED GPS LOGGER DENGAN LOGOUT MANAGER =====
-class UnlimitedDTGPSLoggerWithLogout extends UnlimitedDTGPSLogger {
-    constructor() {
-        super();
-        this.logoutManager = new LogoutManager(this);
-        this.setupLogoutHandlers();
-        this.infinityManager = new InfinityTrackingManager(this);
-        this.backgroundPoller = new InfinityGPSPoller(this, { 
-            pollDelay: 1000,
-            enableHighAccuracy: true
-        });
-        console.log('🚪 Unlimited GPS Logger with Logout Management initialized');
-    }
-    
-    addProcessorSwitchToUI() {
-        try {
-            // Cari atau buat switch element
-            let switchContainer = document.getElementById('processorSwitch');
-            if (!switchContainer) {
-                switchContainer = document.createElement('div');
-                switchContainer.id = 'processorSwitch';
-                switchContainer.className = 'processor-switch';
-                switchContainer.innerHTML = `
-                    <label class="switch">
-                        <input type="checkbox" id="unlimitedProcessorToggle" ${this.useUnlimitedProcessor ? 'checked' : ''}>
-                        <span class="slider">
-                            <span class="slider-label">Real-time</span>
-                            <span class="slider-label">Unlimited</span>
-                        </span>
-                    </label>
-                    <span class="switch-label">GPS Processor Mode</span>
-                `;
-                
-                // Tambahkan ke UI yang sesuai
-                const controlsContainer = document.querySelector('.controls-container') || 
-                                         document.querySelector('.header') || 
-                                         document.body;
-                controlsContainer.appendChild(switchContainer);
-                
-                // Event listener untuk toggle
-                const toggle = document.getElementById('unlimitedProcessorToggle');
-                toggle.addEventListener('change', (e) => {
-                    if (e.target.checked) {
-                        this.enableUnlimitedProcessing();
-                    } else {
-                        this.disableUnlimitedProcessing();
-                    }
-                });
-                
-                console.log('✅ Processor switch UI added successfully');
-            }
-            return true;
-        } catch (error) {
-            console.error('❌ Failed to add processor switch UI:', error);
-            return false;
-        }
-    }
-
-    // ✅ METHOD UNTUK MENDAPATKAN STATUS PROCESSOR
-    getProcessorStatus() {
-        return {
-            activeProcessor: this.useUnlimitedProcessor ? 'Unlimited' : 'Real-time',
-            useUnlimitedProcessor: this.useUnlimitedProcessor,
-            realTimeProcessor: this.realTimeProcessor ? 'Available' : 'Not available',
-            unlimitedProcessor: this.unlimitedProcessor ? 'Available' : 'Not available'
-        };
-    }
-    setupLogoutHandlers() {
-        // Setup logout button handler
-        const logoutBtn = document.getElementById('logoutBtn');
-        if (logoutBtn) {
-            logoutBtn.addEventListener('click', () => this.initiateLogout());
-        }
-
-        // Add logout callbacks untuk components
-        this.logoutManager.addLogoutCallback((phase) => {
-            this.handleComponentLogout(phase);
-        });
-
-        // Handle browser tab close/window unload
-        window.addEventListener('beforeunload', (event) => {
-            this.handleBrowserClose(event);
-        });
-    }
-    
-    async initiateLogout() {
-        // Konfirmasi logout jika journey aktif
-        if (this.journeyStatus === 'started') {
-            const confirmLogout = confirm(
-                'Perjalanan masih aktif. Yakin ingin logout? ' +
-                'Data akan disimpan dan bisa dilanjutkan nanti.'
-            );
-            
-            if (!confirmLogout) {
-                return;
-            }
-        }
-
-        // Show loading state
-        this.addLog('Memulai proses logout...', 'info');
-        
-        // Disable UI selama logout
-        this.disableUI();
-
-        try {
-            await this.logoutManager.performLogout();
-        } catch (error) {
-            console.error('Logout failed:', error);
-            this.addLog('Logout gagal, coba lagi', 'error');
-            this.enableUI();
-        }
-    }
-
-    handleComponentLogout(phase) {
-        console.log(`🔧 Component logout phase: ${phase}`);
-        
-        switch (phase) {
-            case 'start':
-                // Components should prepare for logout
-                this.prepareComponentsForLogout();
-                break;
-                
-            case 'complete':
-                // Components cleanup after logout
-                this.cleanupComponentsAfterLogout();
-                break;
-        }
-    }
-
-    prepareComponentsForLogout() {
-        // Stop semua real-time updates
-        this.stopRealTimeUpdates();
-        this.backgroundPoller.setActive(false);
-        
-        // Disable user interactions
-        this.disableUserInteractions();
-        
-        // Save component states
-        this.saveComponentStates();
-    }
-
-    cleanupComponentsAfterLogout() {
-        // Reset component states
-        this.resetComponentStates();
-        
-        // Clear component data
-        this.clearComponentData();
-        
-        // Enable UI untuk login berikutnya
-        this.enableUI();
-    }
-
-    handleBrowserClose(event) {
-        if (this.journeyStatus === 'started') {
-            // Save state sebelum tab ditutup
-            this.saveSystemState();
-            
-            // Konfirmasi untuk hindari accidental close
-            event.preventDefault();
-            event.returnValue = 
-                'Perjalanan masih aktif. Data telah disimpan dan bisa dilanjutkan saat membuka aplikasi kembali.';
-            return event.returnValue;
-        }
-    }
-
-    stopRealTimeUpdates() {
-        // Stop semua real-time UI updates
-        const updateElements = document.querySelectorAll('[data-real-time-update]');
-        updateElements.forEach(element => {
-            element.classList.add('update-paused');
-        });
-    }
-
-    disableUserInteractions() {
-        // Disable semua buttons dan form controls
-        const interactiveElements = document.querySelectorAll(
-            'button, input, select, textarea'
-        );
-        
-        interactiveElements.forEach(element => {
-            element.disabled = true;
-        });
-        
-        // Add loading indicator
-        this.showLoadingIndicator('Logging out...');
-    }
-
-    enableUI() {
-        // Enable semua buttons dan form controls
-        const interactiveElements = document.querySelectorAll(
-            'button, input, select, textarea'
-        );
-        
-        interactiveElements.forEach(element => {
-            element.disabled = false;
-        });
-        
-        // Remove loading indicator
-        this.hideLoadingIndicator();
-    }
-
-    showLoadingIndicator(message) {
-        // Create atau show loading indicator
-        let loader = document.getElementById('logoutLoader');
-        if (!loader) {
-            loader = document.createElement('div');
-            loader.id = 'logoutLoader';
-            loader.className = 'logout-loading';
-            loader.innerHTML = `
-                <div class="loading-spinner"></div>
-                <div class="loading-text">${message}</div>
-            `;
-            document.body.appendChild(loader);
-        }
-        loader.style.display = 'flex';
-    }
-
-    hideLoadingIndicator() {
-        const loader = document.getElementById('logoutLoader');
-        if (loader) {
-            loader.style.display = 'none';
-        }
-    }
-
-    saveComponentStates() {
-        // Save state dari berbagai components
-        const componentStates = {
-            chat: {
-                isOpen: this.isChatOpen,
-                unreadCount: this.unreadCount
-            },
-            ui: {
-                lastActiveTab: this.getActiveTab(),
-                scrollPositions: this.getScrollPositions()
-            }
-        };
-        
-        this.storageManager.saveAppSettings({
-            componentStates,
-            lastLogout: new Date().toISOString()
-        });
-    }
-
-    resetComponentStates() {
-        // Reset semua component states
-        this.isChatOpen = false;
-        this.unreadCount = 0;
-        this.chatMessages = [];
-        
-        // Reset UI state
-        this.resetUIState();
-    }
-
-    clearComponentData() {
-        // Clear data yang tidak perlu dipertahankan
-        this.speedHistory = [];
-        this.distanceHistory = [];
-        this.accuracyHistory = [];
-        this.clearPersistentDistanceState();
-        
-        // Clear processing buffers
-        if (this.gpsProcessor) {
-            this.gpsProcessor.positionQueue = [];
-        }
-    }
-
-    resetUIState() {
-        // Reset semua UI elements ke state awal
-        const resetElements = document.querySelectorAll('[data-reset-on-logout]');
-        resetElements.forEach(element => {
-            if (element.type === 'text' || element.type === 'password') {
-                element.value = '';
-            } else if (element.classList.contains('active')) {
-                element.classList.remove('active');
-            }
-        });
-        
-        // Reset chat UI
-        const chatMessages = document.getElementById('chatMessages');
-        if (chatMessages) {
-            chatMessages.innerHTML = '';
-        }
-        
-        // Reset logs
-        const systemLog = document.getElementById('systemLog');
-        if (systemLog) {
-            systemLog.innerHTML = '';
-        }
-    }
-
-    getActiveTab() {
-        // Get currently active tab
-        const activeTab = document.querySelector('.tab.active');
-        return activeTab ? activeTab.id : null;
-    }
-
-    getScrollPositions() {
-        // Get scroll positions untuk nanti restore
-        return {
-            main: document.getElementById('mainContent')?.scrollTop || 0,
-            chat: document.getElementById('chatMessages')?.scrollTop || 0,
-            logs: document.getElementById('systemLog')?.scrollTop || 0
-        };
-    }
-
-    // Override method logout original
-    logout() {
-        this.initiateLogout();
-    }
-
-    getLogoutStatus() {
-        return this.logoutManager.getLogoutStatus();
-    }
-}
+// Class pertama dihapus - menggunakan versi yang lebih lengkap di bawah (baris 9094)
 
 // ===== MODIFIKASI MAIN LOGGER UNTUK UNLIMITED OPERATION =====
 class UnlimitedDTGPSLoggerWithLogout extends UnlimitedDTGPSLogger {
@@ -9131,6 +9225,138 @@ class UnlimitedDTGPSLoggerWithLogout extends UnlimitedDTGPSLogger {
         };
     }
 }
+
+class EnhancedDuplicateDetector {
+    constructor() {
+        this.positionHistory = new Map();
+        this.duplicateThresholds = {
+            timeWindow: 2000,
+            distanceThreshold: 10,
+            accuracyThreshold: 50,
+            maxHistorySize: 1000
+        };
+        
+        this.cleanupInterval = setInterval(() => this.cleanupOldPositions(), 60000);
+    }
+
+    isDuplicatePosition(position, context = {}) {
+        if (!position?.coords) return true;
+        
+        const positionKey = this.generatePositionKey(position);
+        const now = this.getCurrentTimestamp();
+        
+        if (this.positionHistory.has(positionKey)) {
+            console.log('🔄 Exact duplicate position detected');
+            return true;
+        }
+        
+        const isNearbyDuplicate = this.checkNearbyDuplicates(position, now, context);
+        if (isNearbyDuplicate) {
+            return true;
+        }
+        
+        this.addToHistory(positionKey, {
+            lat: position.coords.latitude,
+            lng: position.coords.longitude,
+            timestamp: now,
+            accuracy: position.coords.accuracy,
+            source: context.source || 'unknown'
+        });
+        
+        return false;
+    }
+
+    generatePositionKey(position) {
+        const lat = position.coords.latitude.toFixed(6);
+        const lng = position.coords.longitude.toFixed(6);
+        const time = Math.floor((position.timestamp || Date.now()) / 1000);
+        return `${lat}_${lng}_${time}`;
+    }
+
+    checkNearbyDuplicates(position, currentTime, context) {
+        const newPoint = {
+            lat: position.coords.latitude,
+            lng: position.coords.longitude,
+            timestamp: currentTime,
+            accuracy: position.coords.accuracy
+        };
+        
+        let foundDuplicate = false;
+        let closestDistance = Infinity;
+        
+        for (const [key, existingPoint] of this.positionHistory.entries()) {
+            const timeDiff = Math.abs(newPoint.timestamp - existingPoint.timestamp);
+            
+            if (timeDiff > this.duplicateThresholds.timeWindow) {
+                continue;
+            }
+            
+            const distance = this.calculateDistance(
+                newPoint.lat, newPoint.lng,
+                existingPoint.lat, existingPoint.lng
+            );
+            
+            closestDistance = Math.min(closestDistance, distance);
+            
+            const accuracyBuffer = Math.max(newPoint.accuracy, existingPoint.accuracy) / 2;
+            const effectiveThreshold = this.duplicateThresholds.distanceThreshold + accuracyBuffer;
+            
+            if (distance < effectiveThreshold) {
+                console.log(`🔄 Nearby duplicate detected: ${distance.toFixed(2)}m within ${timeDiff}ms`);
+                foundDuplicate = true;
+                break;
+            }
+        }
+        
+        if (context.debug && !foundDuplicate && closestDistance < Infinity) {
+            console.log(`📍 Nearest position: ${closestDistance.toFixed(2)}m away`);
+        }
+        
+        return foundDuplicate;
+    }
+
+    calculateDistance(lat1, lon1, lat2, lon2) {
+        const R = 6371000;
+        const dLat = (lat2 - lat1) * Math.PI / 180;
+        const dLon = (lon2 - lon1) * Math.PI / 180;
+        const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                  Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * 
+                  Math.sin(dLon/2) * Math.sin(dLon/2);
+        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+        return R * c;
+    }
+
+    addToHistory(key, position) {
+        this.positionHistory.set(key, position);
+        
+        if (this.positionHistory.size > this.duplicateThresholds.maxHistorySize) {
+            this.cleanupOldPositions();
+        }
+    }
+
+    cleanupOldPositions() {
+        const now = this.getCurrentTimestamp();
+        const cutoffTime = now - (this.duplicateThresholds.timeWindow * 2);
+        
+        for (const [key, position] of this.positionHistory.entries()) {
+            if (position.timestamp < cutoffTime) {
+                this.positionHistory.delete(key);
+            }
+        }
+        
+        console.log(`🧹 Duplicate detector cleanup: ${this.positionHistory.size} positions in history`);
+    }
+
+    getCurrentTimestamp() {
+        return window.dtLogger?.unifiedTimestampManager?.getUnifiedTimestamp() || Date.now();
+    }
+
+    destroy() {
+        clearInterval(this.cleanupInterval);
+        this.positionHistory.clear();
+    }
+}
+
 // ===== MAIN ENHANCED GPS LOGGER CLASS =====
 class EnhancedDTGPSLogger {
     constructor() {
@@ -10959,7 +11185,8 @@ function startComprehensiveMonitoring() {
                 systemHealth: window.getSystemHealth ? window.getSystemHealth() : null,
                 unlimitedOperation: window.getUnlimitedOperationStatus ? window.getUnlimitedOperationStatus() : null,
                 infinityStatus: window.getInfinityStatus ? window.getInfinityStatus() : null,
-                logoutStatus: window.getLogoutStatus ? window.getLogoutStatus() : null
+                logoutStatus: window.getLogoutStatus ? window.getLogoutStatus() : null,
+                processorStatus: window.getProcessorStatus ? window.getProcessorStatus() : null
             };
             
             console.log('📈 COMPREHENSIVE SYSTEM DIAGNOSTICS:', diagnostics);
@@ -10969,6 +11196,12 @@ function startComprehensiveMonitoring() {
                 console.log('🔒 Auto-activating lock screen mode (background detected)');
                 window.forceLockScreenMode();
             }
+            
+            // Auto-switch to unlimited processor jika di background dan belum aktif
+            if (document.hidden && diagnostics.processorStatus?.useUnlimitedProcessor === false) {
+                console.log('♾️ Auto-switching to Unlimited Processor (background detected)');
+                window.enableUnlimitedProcessor();
+            }
         }
     }, 30000);
 
@@ -10976,7 +11209,15 @@ function startComprehensiveMonitoring() {
     setInterval(() => {
         if (window.dtLogger) {
             console.group('🕒 5-MINUTE COMPREHENSIVE STATUS');
-            window.getGPSDiagnostics ? window.getGPSDiagnostics() : console.log('No diagnostics available');
+            const diagnostics = window.getGPSDiagnostics ? window.getGPSDiagnostics() : 'No diagnostics available';
+            console.log('Full Diagnostics:', diagnostics);
+            
+            // Log processor performance
+            if (window.dtLogger.getProcessorStatus) {
+                const processorStatus = window.dtLogger.getProcessorStatus();
+                console.log('Processor Status:', processorStatus);
+            }
+            
             console.groupEnd();
         }
     }, 300000);
@@ -11069,26 +11310,165 @@ function showErrorMessage(message) {
 
 console.log('🎉 script-mobile.js loaded successfully with UNIFIED INITIALIZATION for ALL FEATURES!');
 
-// ===== GLOBAL ERROR HANDLING =====
-window.addEventListener('error', function(event) {
-    console.error('🚨 Global Error:', event.error);
-    if (window.dtLogger) {
-        window.dtLogger.addLog(`System error: ${event.message}`, 'error');
-    }
-});
+// Duplikat error handler dihapus - sudah ada di atas
 
-window.addEventListener('unhandledrejection', function(event) {
-    console.error('🚨 Unhandled Promise Rejection:', event.reason);
-    if (window.dtLogger) {
-        window.dtLogger.addLog(`Async error: ${event.reason}`, 'error');
+const INFINITY_BRIDGE_HEARTBEAT_MS = 30000;
+let serviceWorkerBridgeInitialized = false;
+let infinityBridgeHeartbeatTimer = null;
+
+function postMessageToServiceWorker(type, data = {}) {
+    if (!('serviceWorker' in navigator)) {
+        return false;
     }
-});
+    
+    const controller = navigator.serviceWorker.controller;
+    if (!controller) {
+        return false;
+    }
+    
+    controller.postMessage({
+        type,
+        data: {
+            ...data,
+            timestamp: new Date().toISOString()
+        }
+    });
+    return true;
+}
+
+function buildInfinityBridgePayload(extra = {}) {
+    return {
+        isBackground: document.hidden,
+        isOffline: !navigator.onLine,
+        lockScreen: Boolean(window.dtLogger?.lockScreenTracker?.lockScreenMode),
+        infinityMode: Boolean(window.dtLogger?.infinityManager?.isInfinityMode),
+        ...extra
+    };
+}
+
+function requestInfinityBackgroundSync(reason = 'generic', options = {}) {
+    if (!('serviceWorker' in navigator)) {
+        const error = new Error('Service Worker unavailable');
+        options.onError?.(error);
+        postMessageToServiceWorker('TRIGGER_INFINITY_SYNC', buildInfinityBridgePayload({
+            reason,
+            fallback: true,
+            error: error.message
+        }));
+        return Promise.resolve(false);
+    }
+    
+    return navigator.serviceWorker.ready
+        .then((registration) => {
+            if (!registration.sync) {
+                throw new Error('SyncManager unavailable');
+            }
+            return registration.sync.register('infinity-gps-sync');
+        })
+        .then(() => {
+            console.log(`♾️ Infinity background sync scheduled: ${reason}`);
+            options.onSuccess?.();
+            return true;
+        })
+        .catch((error) => {
+            console.warn(`⚠️ Infinity background sync fallback (${reason}):`, error.message || error);
+            postMessageToServiceWorker('TRIGGER_INFINITY_SYNC', buildInfinityBridgePayload({
+                reason,
+                fallback: true,
+                error: error?.message
+            }));
+            options.onError?.(error);
+            return false;
+        });
+}
+
+function notifyServiceWorkerLockscreenState(isActive, extra = {}) {
+    postMessageToServiceWorker('LOCKSCREEN_STATE_CHANGE', buildInfinityBridgePayload({
+        lockScreen: isActive,
+        active: isActive,
+        ...extra
+    }));
+}
+
+function startInfinityBridgeHeartbeat(emitFn) {
+    if (typeof emitFn !== 'function') {
+        return;
+    }
+    if (infinityBridgeHeartbeatTimer) {
+        return;
+    }
+    
+    const heartbeat = () => {
+        emitFn('heartbeat');
+        infinityBridgeHeartbeatTimer = window.setTimeout(heartbeat, INFINITY_BRIDGE_HEARTBEAT_MS);
+    };
+    
+    emitFn('bootstrap');
+    infinityBridgeHeartbeatTimer = window.setTimeout(heartbeat, INFINITY_BRIDGE_HEARTBEAT_MS);
+}
+
+function setupInfinityServiceWorkerBridge() {
+    if (serviceWorkerBridgeInitialized || !('serviceWorker' in navigator)) {
+        return;
+    }
+    
+    serviceWorkerBridgeInitialized = true;
+    
+    const emitState = (reason) => {
+        postMessageToServiceWorker('BACKGROUND_STATE_CHANGE', buildInfinityBridgePayload({ reason }));
+    };
+    
+    startInfinityBridgeHeartbeat(emitState);
+    requestInfinityBackgroundSync('bridge-bootstrap');
+    
+    document.addEventListener('visibilitychange', () => {
+        emitState('visibilitychange');
+        if (!document.hidden && navigator.onLine && window.dtLogger?.infinityManager) {
+            window.dtLogger.infinityManager.triggerInfinitySync();
+        }
+        if (!document.hidden && navigator.onLine) {
+            requestInfinityBackgroundSync('visibility-foreground');
+        }
+    });
+    
+    window.addEventListener('focus', () => emitState('focus'));
+    window.addEventListener('blur', () => emitState('blur'));
+    
+    window.addEventListener('online', () => {
+        postMessageToServiceWorker('NETWORK_ONLINE', buildInfinityBridgePayload({ reason: 'online' }));
+        emitState('online');
+        requestInfinityBackgroundSync('bridge-online');
+        if (window.dtLogger?.infinityManager) {
+            window.dtLogger.infinityManager.triggerInfinitySync();
+        }
+    });
+    
+    window.addEventListener('offline', () => {
+        postMessageToServiceWorker('NETWORK_OFFLINE', buildInfinityBridgePayload({ reason: 'offline' }));
+        emitState('offline');
+        requestInfinityBackgroundSync('bridge-offline');
+    });
+}
+window.postMessageToServiceWorker = postMessageToServiceWorker;
 
 // ===== SERVICE WORKER REGISTRATION (Optional) =====
 if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('/sw.js')
         .then(registration => {
             console.log('✅ Service Worker registered:', registration);
+            setupInfinityServiceWorkerBridge();
+            return navigator.serviceWorker.ready;
+        })
+        .then(() => {
+            setupInfinityServiceWorkerBridge();
+            navigator.serviceWorker.addEventListener('controllerchange', () => {
+                if (infinityBridgeHeartbeatTimer) {
+                    clearTimeout(infinityBridgeHeartbeatTimer);
+                    infinityBridgeHeartbeatTimer = null;
+                }
+                serviceWorkerBridgeInitialized = false;
+                setupInfinityServiceWorkerBridge();
+            });
         })
         .catch(error => {
             console.log('❌ Service Worker registration failed:', error);
