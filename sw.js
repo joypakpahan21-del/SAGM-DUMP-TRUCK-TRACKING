@@ -2,8 +2,17 @@
 const CACHE_NAME = 'dt-gps-realtime-v4.0';
 const GPS_DATA_CACHE = 'gps-realtime-data-v4.0';
 const SYNC_QUEUE_CACHE = 'gps-sync-queue-v4.0';
+const INFINITY_SYNC_TAG = 'infinity-gps-sync';
+const BACKGROUND_SYNC_TAG = 'background-gps-sync';
+const HEALTH_SYNC_TAG = 'gps-health-check';
 const MONITOR_CONTEXT = 'monitor';
 const MOBILE_CONTEXT = 'mobile';
+const INFINITY_SYNC_INTERVAL_MS = 30000;
+const INFINITY_HEALTH_INTERVAL_MS = 60000;
+
+let infinitySyncLoopStarted = false;
+let infinitySyncTimer = null;
+let infinityHealthTimer = null;
 const urlsToCache = [
   './',
   './mobile.html',
@@ -13,6 +22,126 @@ const urlsToCache = [
   '/SAGM-DUMP-TRUCK-TRACKING/mobile.html',
   '/SAGM-DUMP-TRUCK-TRACKING/manifest.json'
 ];
+
+let infinityClientState = {
+  isBackground: false,
+  isOffline: false,
+  lockScreen: false,
+  infinityMode: false,
+  pendingFlush: false,
+  pendingReason: null,
+  lastUpdate: null,
+  offlineSince: null
+};
+
+function getOnlineStatus() {
+  if (typeof self !== 'undefined' && self.navigator && typeof self.navigator.onLine === 'boolean') {
+    return self.navigator.onLine;
+  }
+  return true;
+}
+
+function updateInfinityState(update = {}) {
+  const previousState = { ...infinityClientState };
+  infinityClientState = {
+    ...infinityClientState,
+    ...update,
+    lastUpdate: Date.now()
+  };
+
+  const justCameOnline = previousState.isOffline && !infinityClientState.isOffline;
+  const newPendingWhileOnline =
+    infinityClientState.pendingFlush &&
+    !previousState.pendingFlush &&
+    !infinityClientState.isOffline;
+
+  if ((justCameOnline || newPendingWhileOnline) && infinityClientState.pendingFlush) {
+    triggerImmediateInfinitySync(update.triggerReason || 'state-change').catch((error) => {
+      console.warn('⚠️ Failed to trigger immediate infinity sync after state change:', error);
+    });
+  }
+}
+
+async function ensureBackgroundSyncRegistration(tag = INFINITY_SYNC_TAG, context = 'generic') {
+  if (!self.registration || !self.registration.sync) {
+    if (tag === INFINITY_SYNC_TAG) {
+      console.warn(`⚠️ SyncManager unavailable for ${context}, relying on manual trigger`);
+      await triggerImmediateInfinitySync(`fallback-${context}`);
+    }
+    return;
+  }
+
+  try {
+    await self.registration.sync.register(tag);
+    console.log(`🔁 Background sync registered: ${tag} (${context})`);
+  } catch (error) {
+    console.warn(`⚠️ Background sync registration failed for ${tag} (${context}):`, error);
+    if (tag === INFINITY_SYNC_TAG) {
+      await triggerImmediateInfinitySync(`fallback-${context}`);
+    }
+  }
+}
+
+function markInfinityPending(reason = 'unspecified') {
+  updateInfinityState({
+    pendingFlush: true,
+    pendingReason: reason,
+    offlineSince: infinityClientState.isOffline ? (infinityClientState.offlineSince || Date.now()) : infinityClientState.offlineSince
+  });
+  scheduleInfinityBackgroundSync(reason);
+}
+
+function scheduleInfinityBackgroundSync(reason = 'unspecified') {
+  ensureBackgroundSyncRegistration(INFINITY_SYNC_TAG, reason).catch((error) => {
+    console.warn('⚠️ Failed to schedule infinity background sync:', error);
+  });
+}
+
+function handleNetworkStatusChange(isOnline, payload = {}) {
+  if (isOnline) {
+    updateInfinityState({
+      isOffline: false,
+      offlineSince: null,
+      pendingReason: infinityClientState.pendingReason
+    });
+    scheduleInfinityBackgroundSync(payload.reason || 'network-online');
+    triggerImmediateInfinitySync(payload.reason || 'network-online').catch((error) => {
+      console.warn('⚠️ Failed to trigger infinity sync on network recovery:', error);
+    });
+  } else {
+    updateInfinityState({
+      isOffline: true,
+      offlineSince: Date.now()
+    });
+    markInfinityPending('network-offline');
+  }
+}
+
+function handleLockScreenStateChange(payload = {}) {
+  updateInfinityState({
+    lockScreen: Boolean(payload.active ?? payload.lockScreen),
+    infinityMode: payload.infinityMode ?? infinityClientState.infinityMode
+  });
+  if (payload.active) {
+    startInfinitySync();
+    startInfinityHealthLoop();
+  }
+}
+
+async function refreshInfinityPendingFlag() {
+  try {
+    const cache = await caches.open(SYNC_QUEUE_CACHE);
+    const remaining = await cache.keys();
+    updateInfinityState({
+      pendingFlush: remaining.length > 0,
+      pendingReason: remaining.length > 0 ? infinityClientState.pendingReason : null
+    });
+    return remaining.length;
+  } catch (error) {
+    console.warn('⚠️ Unable to refresh infinity pending flag:', error);
+    return null;
+  }
+}
 
 // ✅ INSTALL EVENT - Setup cache untuk offline support
 self.addEventListener('install', (event) => {
@@ -62,6 +191,8 @@ self.addEventListener('activate', (event) => {
       );
     }).then(() => {
       console.log('✅ Cache cleanup completed');
+      startInfinitySync();
+      startInfinityHealthLoop();
       return self.clients.claim();
     }).catch(error => {
       console.error('❌ Activation failed:', error);
@@ -150,27 +281,48 @@ async function handleGPSFetch(request) {
   }
 }
 // ✅ INFINITY SYNC STRATEGY - Tidak pernah berhenti sync
+async function runInfinitySyncCycle(source = 'scheduled') {
+  const isOnline = getOnlineStatus();
+  
+  if (!isOnline) {
+      console.log(`📴 Skipping infinity sync (${source}) - offline`);
+      markInfinityPending(`offline-${source}`);
+      return;
+  }
+  
+  try {
+      await syncCachedGPSData();
+  } catch (error) {
+      console.error(`❌ Infinity sync cycle error [${source}]:`, error);
+  }
+}
+
+function scheduleInfinitySyncCycle(delay = INFINITY_SYNC_INTERVAL_MS) {
+  if (infinitySyncTimer) {
+      clearTimeout(infinitySyncTimer);
+  }
+  
+  infinitySyncTimer = setTimeout(async () => {
+      await runInfinitySyncCycle('loop');
+      scheduleInfinitySyncCycle(INFINITY_SYNC_INTERVAL_MS);
+  }, Math.max(0, delay));
+}
+
 async function startInfinitySync() {
-  console.log('♾️ Starting infinity sync strategy');
+  if (infinitySyncLoopStarted) {
+      return;
+  }
   
-  // Sync immediately
-  await syncCachedGPSData();
+  infinitySyncLoopStarted = true;
+  console.log('♾️ Infinity sync loop initialized');
   
-  // Then set up continuous sync
-  const continuousSync = async () => {
-      if (navigator.onLine) {
-          try {
-              await syncCachedGPSData();
-          } catch (error) {
-              console.error('Continuous sync error:', error);
-          }
-      }
-      
-      // Schedule next sync - tidak pernah berhenti
-      setTimeout(continuousSync, 30000); // Sync setiap 30 detik
-  };
-  
-  continuousSync();
+  await runInfinitySyncCycle('bootstrap');
+  scheduleInfinitySyncCycle(0);
+}
+
+async function triggerImmediateInfinitySync(reason = 'manual') {
+  startInfinitySync();
+  await runInfinitySyncCycle(reason);
 }
 
 // ✅ ENHANCED BACKGROUND SYNC dengan infinity retry
@@ -178,12 +330,16 @@ self.addEventListener('sync', (event) => {
   console.log('🔄 Infinity Background Sync:', event.tag);
   
   switch (event.tag) {
-      case 'infinity-gps-sync':
+      case INFINITY_SYNC_TAG:
           event.waitUntil(performInfinitySync());
           break;
           
-      case 'gps-health-check':
+      case HEALTH_SYNC_TAG:
           event.waitUntil(performInfinityHealthCheck());
+          break;
+      
+      case BACKGROUND_SYNC_TAG:
+          event.waitUntil(syncCachedGPSData());
           break;
           
       default:
@@ -197,12 +353,13 @@ async function performInfinitySync() {
   console.log('♾️ Starting infinity sync process...');
   
   let attempt = 0;
-  const maxAttempts = 10; // Batas wajar untuk prevent infinite loop
+  const maxAttempts = 5;
   
   while (attempt < maxAttempts) {
       try {
           await syncCachedGPSData();
           console.log(`✅ Infinity sync completed on attempt ${attempt + 1}`);
+          await refreshInfinityPendingFlag();
           
           // Notify clients tentang sync success
           await notifyClients({
@@ -222,6 +379,8 @@ async function performInfinitySync() {
           
           if (attempt >= maxAttempts) {
               console.error('🚨 Maximum infinity sync attempts reached');
+              markInfinityPending('infinity-sync-retry');
+              scheduleInfinityBackgroundSync('infinity-sync-retry');
               
               // Notify clients tentang failure
               await notifyClients({
@@ -251,7 +410,7 @@ async function performInfinityHealthCheck() {
       
       const healthStatus = {
           timestamp: new Date().toISOString(),
-          online: navigator.onLine,
+          online: getOnlineStatus(),
           cacheStatus: await getCacheStatus(),
           syncQueue: await getSyncQueueStatus(),
           storage: await getStorageEstimate(),
@@ -270,7 +429,7 @@ async function performInfinityHealthCheck() {
       // Schedule next health check jika dalam infinity mode
       if (healthStatus.infinityMode) {
           setTimeout(() => {
-              self.registration.sync.register('gps-health-check')
+              ensureBackgroundSyncRegistration(HEALTH_SYNC_TAG, 'health-check-followup')
                   .then(() => console.log('🔍 Next infinity health check scheduled'))
                   .catch(err => console.error('Health check scheduling failed:', err));
           }, 60000); // Setiap 1 menit
@@ -289,6 +448,24 @@ async function performInfinityHealthCheck() {
           }
       });
   }
+}
+
+function startInfinityHealthLoop() {
+  if (infinityHealthTimer) {
+      return;
+  }
+  
+  const runHealthCheck = async () => {
+      try {
+          await performInfinityHealthCheck();
+      } catch (error) {
+          console.error('❌ Periodic infinity health check failed:', error);
+      } finally {
+          infinityHealthTimer = setTimeout(runHealthCheck, INFINITY_HEALTH_INTERVAL_MS);
+      }
+  };
+  
+  infinityHealthTimer = setTimeout(runHealthCheck, INFINITY_HEALTH_INTERVAL_MS);
 }
 
 // ✅ HELPER FUNCTION: Get Cache Status
@@ -374,17 +551,26 @@ async function getOldestCachedItem() {
 async function handleGPSWriteOperation(request) {
   console.log('📝 GPS Write Operation - Caching for offline sync');
   
-  // Clone request untuk caching
-  const requestClone = request.clone();
-  const requestBody = await request.json();
+  // Clone request untuk caching dan network forwarding
+  const requestCloneForBody = request.clone();
+  const requestCloneForNetwork = request.clone();
+  let requestBody = {};
+  
+  try {
+      requestBody = await requestCloneForBody.json();
+  } catch (error) {
+      console.warn('⚠️ Failed to parse request body, using empty payload', error);
+      requestBody = {};
+  }
   
   // Cache data untuk sync nanti
   await cacheGPSDataForSync(request.url, request.method, requestBody);
   
   // Try to send to server jika online
-  if (navigator.onLine) {
+  const isOnline = getOnlineStatus();
+  if (isOnline) {
     try {
-      const response = await fetch(request);
+      const response = await fetch(requestCloneForNetwork);
       if (response.ok) {
         console.log('📡 GPS data sent to server successfully');
         
@@ -412,7 +598,7 @@ async function handleGPSWriteOperation(request) {
 // ✅ HANDLE GPS READ OPERATIONS - Network First
 async function handleGPSReadOperation(request) {
   // Try network first
-  if (navigator.onLine) {
+  if (getOnlineStatus()) {
     try {
       const response = await fetch(request);
       if (response.ok) {
@@ -458,6 +644,7 @@ async function cacheGPSDataForSync(url, method, data) {
     
     const response = new Response(JSON.stringify(cacheItem));
     await cache.put(cacheKey, response);
+    markInfinityPending('cache-gps-data');
     
     console.log('💾 GPS data cached for sync:', {
       type: cacheItem.priority,
@@ -478,19 +665,14 @@ async function cacheGPSDataForSync(url, method, data) {
     
   } catch (error) {
     console.error('❌ Failed to cache GPS data for sync:', error);
-    
-    // Fallback: Gunakan localStorage
-    try {
-      const fallbackData = JSON.parse(localStorage.getItem('gps_fallback_queue') || '[]');
-      fallbackData.push({
-        url, method, data,
-        timestamp: new Date().toISOString(),
-        priority: getSyncPriority(data)
-      });
-      localStorage.setItem('gps_fallback_queue', JSON.stringify(fallbackData));
-    } catch (fallbackError) {
-      console.error('❌ Fallback caching also failed');
-    }
+    await notifyClients({
+      type: 'CACHE_ERROR',
+      data: {
+        error: error.message,
+        url,
+        timestamp: new Date().toISOString()
+      }
+    });
   }
 }
 
@@ -543,8 +725,8 @@ async function syncCachedGPSData() {
     const requests = await cache.keys();
     
     console.log(`📡 Starting sync: ${requests.length} items in queue`);
-    
     if (requests.length === 0) {
+      updateInfinityState({ pendingFlush: false, pendingReason: null });
       await notifyClients({
         type: 'SYNC_COMPLETED',
         data: { message: 'No data to sync', items: 0 }
@@ -565,13 +747,6 @@ async function syncCachedGPSData() {
         if (!response) continue;
         
         const cachedItem = await response.json();
-        
-        // Skip jika sudah terlalu banyak attempt
-        if (cachedItem.attemptCount > 5) {
-          console.log('🗑️ Skipping item - too many attempts:', cachedItem.attemptCount);
-          await cache.delete(request);
-          continue;
-        }
         
         // Try to send to server
         const syncSuccess = await sendToServer(cachedItem);
@@ -619,11 +794,13 @@ async function syncCachedGPSData() {
     // Schedule retry untuk failed items
     if (failCount > 0) {
       setTimeout(() => {
-        self.registration.sync.register('background-gps-sync')
+        ensureBackgroundSyncRegistration(BACKGROUND_SYNC_TAG, 'failed-item-retry')
           .then(() => console.log('🔄 Retry scheduled for failed items'))
           .catch(err => console.error('Retry scheduling failed:', err));
       }, 30000);
     }
+
+    await refreshInfinityPendingFlag();
     
   } catch (error) {
     console.error('❌ GPS sync failed completely:', error);
@@ -749,7 +926,7 @@ async function performHealthCheckSync() {
       syncQueueSize: syncItems.length,
       gpsCacheSize: gpsItems.length,
       lastCheck: new Date().toISOString(),
-      online: navigator.onLine,
+      online: getOnlineStatus(),
       storage: await getStorageEstimate()
     };
     
@@ -835,6 +1012,10 @@ self.addEventListener('message', async (event) => {
       case 'TRIGGER_SYNC':
         await triggerManualSync();
         break;
+      
+      case 'TRIGGER_INFINITY_SYNC':
+        await triggerImmediateInfinitySync('client-request');
+        break;
         
       case 'CLEAR_CACHE':
         await clearSpecificCache(data);
@@ -846,6 +1027,18 @@ self.addEventListener('message', async (event) => {
         
       case 'BACKGROUND_STATE_CHANGE':
         handleBackgroundStateChange(data);
+        break;
+      
+      case 'NETWORK_ONLINE':
+        handleNetworkStatusChange(true, data);
+        break;
+      
+      case 'NETWORK_OFFLINE':
+        handleNetworkStatusChange(false, data);
+        break;
+      
+      case 'LOCKSCREEN_STATE_CHANGE':
+        handleLockScreenStateChange(data);
         break;
         
       case 'GET_STORAGE_INFO':
@@ -988,7 +1181,7 @@ async function getSyncStatus() {
     return {
       totalItems: requests.length,
       byPriority: { highPriority, mediumPriority, lowPriority },
-      online: navigator.onLine,
+      online: getOnlineStatus(),
       lastUpdate: new Date().toISOString()
     };
     
@@ -999,7 +1192,7 @@ async function getSyncStatus() {
 
 // ✅ TRIGGER MANUAL SYNC
 async function triggerManualSync() {
-  if (!navigator.onLine) {
+  if (!getOnlineStatus()) {
     await notifyClients({
       type: 'SYNC_STATUS',
       data: { status: 'offline', message: 'Tidak dapat sync - perangkat offline' }
@@ -1008,7 +1201,7 @@ async function triggerManualSync() {
   }
   
   try {
-    await self.registration.sync.register('background-gps-sync');
+    await ensureBackgroundSyncRegistration(BACKGROUND_SYNC_TAG, 'manual-trigger');
     
     await notifyClients({
       type: 'SYNC_STATUS',
@@ -1054,6 +1247,8 @@ async function handleLogoutCleanup() {
       }
     });
     
+    updateInfinityState({ pendingFlush: false, pendingReason: null });
+    
   } catch (error) {
     console.error('❌ Logout cleanup failed:', error);
   }
@@ -1063,12 +1258,20 @@ async function handleLogoutCleanup() {
 function handleBackgroundStateChange(data) {
   console.log('📱 Background state changed:', data.isBackground);
   
-  // Optimize behavior berdasarkan state
+  updateInfinityState({
+    isBackground: Boolean(data.isBackground),
+    lockScreen: data.lockScreen ?? infinityClientState.lockScreen,
+    infinityMode: data.infinityMode ?? infinityClientState.infinityMode
+  });
+  
   if (data.isBackground) {
     console.log('🎯 Background mode - optimizing for battery');
   } else {
     console.log('🎯 Foreground mode - full features enabled');
   }
+  
+  startInfinitySync();
+  startInfinityHealthLoop();
 }
 
 // ✅ CLEAR SPECIFIC CACHE
@@ -1140,9 +1343,10 @@ async function removeFromSyncCache(url, data) {
 }
 
 async function getStorageEstimate() {
-  if (navigator.storage && navigator.storage.estimate) {
+  const nav = (typeof self !== 'undefined') ? self.navigator : undefined;
+  if (nav?.storage?.estimate) {
     try {
-      const estimate = await navigator.storage.estimate();
+      const estimate = await nav.storage.estimate();
       const percentage = estimate.quota ? (estimate.usage / estimate.quota) * 100 : 0;
       
       return {
@@ -1191,7 +1395,7 @@ async function notifyClients(message) {
 
 // ✅ PERIODIC SYNC untuk maintenance
 self.addEventListener('periodicsync', (event) => {
-  if (event.tag === 'gps-health-check') {
+  if (event.tag === HEALTH_SYNC_TAG) {
     console.log('🔍 Periodic GPS Health Check');
     event.waitUntil(performHealthCheckSync());
   }
