@@ -189,6 +189,7 @@ class AdvancedSAGMGpsTracking {
             this.startPeriodicTasks();
             this.setupDataLogger();
             this.testFirebaseConnection();
+            this.setupMonitorChatSystem();
             
             // ✅ FIX: Initialize analytics systems dengan error handling yang lebih baik
             const systems = [
@@ -259,47 +260,29 @@ class AdvancedSAGMGpsTracking {
 
     // ===== ENHANCED CHAT SYSTEM METHODS =====
     
-    // ✅ PERBAIKI: Terima semua pesan dari driver, bukan hanya type 'monitor'
+    
     handleMonitorChatMessage(unitName, message) {
-        if (!message || !message.text) return; // Skip invalid messages
-        
-        // ✅ TERIMA SEMUA PESAN DARI DRIVER (type !== 'monitor')
-        if (message.type === 'monitor') return; // Skip our own messages
-        
+        if (!message || !message.text || message.type === 'monitor') return; // Skip own messages
+
         if (!this.monitorChatMessages.has(unitName)) {
             this.monitorChatMessages.set(unitName, []);
         }
-        
         const messages = this.monitorChatMessages.get(unitName);
-        
-        // Check for duplicate messages
-        const messageExists = messages.some(msg => 
-            msg.id === message.id || 
-            (msg.timestamp === message.timestamp && msg.sender === message.sender)
-        );
-        
+        const messageExists = messages.some(msg => msg.id === message.id);
         if (messageExists) return;
-        
-        // ✅ TAMBAH PESAN BARU DARI DRIVER
+
         messages.push(message);
-        
-        // Update unread count jika chat tidak aktif
         if (this.activeChatUnit !== unitName) {
             const currentCount = this.monitorUnreadCounts.get(unitName) || 0;
             this.monitorUnreadCounts.set(unitName, currentCount + 1);
         }
-        
         this.updateMonitorChatUI();
         this.updateMonitorChatUnitSelect();
-        
-        // Show notification jika tidak sedang chat dengan unit tersebut
         if (this.activeChatUnit !== unitName) {
             this.showMonitorChatNotification(unitName, message);
         }
-        
-        console.log(`💬 New message from ${unitName}:`, message);
-        this.logData(`Pesan baru dari ${unitName}: ${message.text}`, 'info');
     }
+
 
     // ✅ PERBAIKI: Method untuk kirim pesan dari monitor ke driver
     async setupServiceWorker() {
@@ -570,55 +553,42 @@ class AdvancedSAGMGpsTracking {
     async sendMonitorMessage() {
         const messageInput = document.getElementById('monitorChatInput');
         const messageText = messageInput?.value.trim();
-        
         if (!messageText || !this.activeChatUnit) {
             alert('Pilih unit dan ketik pesan terlebih dahulu!');
             return;
         }
-        
         if (!this.monitorChatRefs.has(this.activeChatUnit)) {
             alert(`Tidak dapat terhubung dengan ${this.activeChatUnit}`);
             return;
         }
-        
+
         const messageId = 'msg_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
-        
         const messageData = {
             id: messageId,
             text: messageText,
             sender: 'MONITOR',
             unit: this.activeChatUnit,
             timestamp: new Date().toISOString(),
-            timeDisplay: new Date().toLocaleTimeString('id-ID', { 
-                hour: '2-digit', 
-                minute: '2-digit' 
-            }),
-            type: 'monitor', // ✅ TANDAI SEBAGAI PESAN DARI MONITOR
+            timeDisplay: new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }),
+            type: 'monitor',
             status: 'sent'
         };
-        
+
         try {
             const chatRef = this.monitorChatRefs.get(this.activeChatUnit);
             await chatRef.push(messageData);
-            
-            // ✅ TAMBAH PESAN KE LOCAL MESSAGES
             if (!this.monitorChatMessages.has(this.activeChatUnit)) {
                 this.monitorChatMessages.set(this.activeChatUnit, []);
             }
             this.monitorChatMessages.get(this.activeChatUnit).push(messageData);
-            
             this.updateMonitorChatUI();
-            this.logData(`💬 Pesan ke ${this.activeChatUnit}: "${messageText}"`, 'success');
-            
             if (messageInput) messageInput.value = '';
-            this.stopMonitorTyping();
-            
         } catch (error) {
-            console.error('Failed to send monitor message:', error);
-            this.logData('❌ Gagal mengirim pesan ke driver', 'error');
+            console.error('Gagal mengirim pesan:', error);
             alert('Gagal mengirim pesan. Coba lagi.');
         }
     }
+
 
     // ✅ PERBAIKI: Tampilkan semua pesan dengan format yang benar
     createMonitorMessageElement(message) {
@@ -778,63 +748,44 @@ updateDriverData(driverData) {
             const chatRef = database.ref('/chat/' + unitName);
             const snapshot = await chatRef.once('value');
             const chatData = snapshot.val();
-            
-            if (!chatData) return;
-            
+            if (!chatData) {
+                if (!this.monitorChatMessages.has(unitName)) {
+                    this.monitorChatMessages.set(unitName, []);
+                }
+                return;
+            }
             this.monitorChatMessages.set(unitName, []);
-            
             Object.values(chatData).forEach(message => {
                 if (message && message.text) {
                     this.monitorChatMessages.get(unitName).push(message);
                 }
             });
-            
-            // Sort messages by timestamp
             const messages = this.monitorChatMessages.get(unitName);
             messages.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
-            
             this.updateMonitorChatUI();
-            
         } catch (error) {
-            console.error(`Failed to load chat history for ${unitName}:`, error);
+            console.error(`Gagal load chat history untuk ${unitName}:`, error);
         }
     }
 
-    // ✅ METHOD BARU: Clear unread messages
     clearUnreadMessages(unitName) {
-        if (this.monitorUnreadCounts.has(unitName)) {
-            this.monitorUnreadCounts.set(unitName, 0);
-            this.updateMonitorChatUnitSelect();
-        }
+        this.monitorUnreadCounts.set(unitName, 0);
+        this.updateMonitorChatUnitSelect();
     }
 
     // ✅ PERBAIKI: Saat pilih unit, load history dan clear unread
     selectChatUnit(unitName) {
         if (unitName === this.activeChatUnit) return;
-        
-        this.stopMonitorTyping();
         this.activeChatUnit = unitName;
-        
-        // Clear unread count
         this.clearUnreadMessages(unitName);
-        
-        // Load chat history
         this.loadChatHistory(unitName);
-        
         this.updateMonitorChatUI();
-        this.updateMonitorChatUnitSelect();
-        
         const chatInput = document.getElementById('monitorChatInput');
         if (chatInput) {
-            setTimeout(() => {
-                chatInput.focus();
-                chatInput.select();
-            }, 150);
+            setTimeout(() => { chatInput.focus(); }, 150);
         }
-        
-        console.log(`💬 Now chatting with unit: ${unitName}`);
-        this.logData(`Memulai chat dengan unit ${unitName}`, 'info');
     }
+
 
     // ✅ METHOD BARU: Validasi koneksi chat
     validateChatConnection(unitName) {
@@ -2702,43 +2653,27 @@ updateDriverData(driverData) {
         this.reportGenerator.exportDailyReport();
     }
 
-    // ===== CHAT SYSTEM METHODS =====
     setupMonitorChatSystem() {
-        console.log('💬 Initializing enhanced monitor chat system with analytics...');
-        
-        try {
-            database.ref('/chat').on('child_added', (snapshot) => {
-                const unitName = snapshot.key;
-                console.log(`💬 New chat unit detected: ${unitName}`);
-                this.setupUnitChatListener(unitName);
-            });
-
-            database.ref('/chat').on('child_removed', (snapshot) => {
-                const unitName = snapshot.key;
-                this.cleanupUnitChatListener(unitName);
-            });
-
-            database.ref('/units').on('value', (snapshot) => {
-                const unitsData = snapshot.val();
-                if (unitsData) {
-                    Object.keys(unitsData).forEach(unitName => {
-                        if (!this.monitorChatRefs.has(unitName)) {
-                            this.setupUnitChatListener(unitName);
-                        }
-                    });
-                }
-            });
-
-            this.setupChatEventHandlers();
-            this.monitorChatInitialized = true;
-            
-            console.log('💬 Enhanced monitor chat system with analytics activated');
-            this.logData('Sistem chat monitor dengan analytics diaktifkan', 'system');
-        } catch (chatError) {
-            console.error('Chat system initialization failed:', chatError);
-            this.logData('Sistem chat gagal diinisialisasi', 'warning');
-        }
+    console.log('💬 Initializing enhanced monitor chat system...');
+    try {
+        database.ref('/units').on('value', (snapshot) => {
+            const unitsData = snapshot.val();
+            if (unitsData) {
+                Object.keys(unitsData).forEach(unitName => {
+                    if (!this.monitorChatRefs.has(unitName)) {
+                        this.setupUnitChatListener(unitName);
+                    }
+                });
+            }
+        });
+        this.setupChatEventHandlers();
+        this.monitorChatInitialized = true;
+        console.log('✅ Monitor chat system initialized');
+    } catch (error) {
+        console.error('Chat system initialization failed:', error);
     }
+}
+
     setupChatWindowBehavior() {
         console.log('💬 Setting up chat window behavior...');
         
@@ -2809,49 +2744,15 @@ updateDriverData(driverData) {
 
     setupUnitChatListener(unitName) {
         if (this.monitorChatRefs.has(unitName)) return;
-        
-        console.log(`💬 Setting up chat listener for unit: ${unitName}`);
-        
         const chatRef = database.ref('/chat/' + unitName);
         this.monitorChatRefs.set(unitName, chatRef);
         this.monitorChatMessages.set(unitName, []);
         this.monitorUnreadCounts.set(unitName, 0);
-        
-        chatRef.off();
-        
         chatRef.on('child_added', (snapshot) => {
             const message = snapshot.val();
             this.handleMonitorChatMessage(unitName, message);
         });
-        
-        const typingRef = database.ref('/typing/' + unitName);
-        typingRef.on('value', (snapshot) => {
-            const typingData = snapshot.val();
-            this.handleMonitorTypingIndicator(unitName, typingData);
-        });
-
         this.updateMonitorChatUnitSelect();
-        console.log(`💬 Now actively listening to chat for unit: ${unitName}`);
-    }
-
-    cleanupUnitChatListener(unitName) {
-        if (this.monitorChatRefs.has(unitName)) {
-            const chatRef = this.monitorChatRefs.get(unitName);
-            chatRef.off();
-            
-            this.monitorChatRefs.delete(unitName);
-            this.monitorChatMessages.delete(unitName);
-            this.monitorUnreadCounts.delete(unitName);
-            
-            this.updateMonitorChatUnitSelect();
-            
-            if (this.activeChatUnit === unitName) {
-                this.activeChatUnit = null;
-                this.updateMonitorChatUI();
-            }
-            
-            console.log(`💬 Stopped listening to chat for unit: ${unitName}`);
-        }
     }
 
     toggleMonitorChat() {
@@ -3008,77 +2909,58 @@ updateDriverData(driverData) {
 
     updateMonitorChatUI() {
         const messageList = document.getElementById('monitorChatMessages');
-        const unreadBadge = document.getElementById('monitorUnreadBadge');
-        const chatInput = document.getElementById('monitorChatInput');
-        const sendBtn = document.getElementById('monitorSendBtn');
-        const unitSelect = document.getElementById('monitorChatUnitSelect');
-        
         if (!messageList) return;
-        
+
         let totalUnread = 0;
         this.monitorUnreadCounts.forEach(count => totalUnread += count);
-        
+        const unreadBadge = document.getElementById('monitorUnreadBadge');
         if (unreadBadge) {
             unreadBadge.textContent = totalUnread > 0 ? totalUnread : '';
             unreadBadge.style.display = totalUnread > 0 ? 'inline' : 'none';
         }
-        
+
         const hasActiveUnit = !!this.activeChatUnit;
-        
+        const chatInput = document.getElementById('monitorChatInput');
+        const sendBtn = document.getElementById('monitorSendBtn');
         if (chatInput) chatInput.disabled = !hasActiveUnit;
         if (sendBtn) sendBtn.disabled = !hasActiveUnit;
-        if (unitSelect) unitSelect.value = this.activeChatUnit || '';
-        
-        if (messageList && !hasActiveUnit) {
-            messageList.innerHTML = `
-                <div class="chat-placeholder text-center text-muted py-4">
-                    <small>Pilih unit untuk memulai percakapan...</small>
-                </div>
-            `;
+
+        if (!hasActiveUnit) {
+            messageList.innerHTML = '<div class="chat-placeholder text-center text-muted py-4"><small>Pilih unit untuk memulai percakapan...</small></div>';
             return;
         }
-        
+
         const activeMessages = this.monitorChatMessages.get(this.activeChatUnit) || [];
-        
         if (activeMessages.length === 0) {
-            messageList.innerHTML = `
-                <div class="chat-placeholder text-center text-muted py-4">
-                    <small>Mulai percakapan dengan driver ${this.activeChatUnit}...</small>
-                </div>
-            `;
+            messageList.innerHTML = `<div class="chat-placeholder text-center text-muted py-4"><small>Mulai percakapan dengan driver ${this.activeChatUnit}...</small></div>`;
             return;
         }
-        
+
         messageList.innerHTML = '';
-        
-        const groupedMessages = this.groupMonitorMessagesByDate(activeMessages);
-        
-        Object.keys(groupedMessages).forEach(date => {
-            if (Object.keys(groupedMessages).length > 1) {
-                const dateElement = document.createElement('div');
-                dateElement.className = 'chat-date-separator';
-                dateElement.innerHTML = `<span>${date}</span>`;
-                messageList.appendChild(dateElement);
-            }
-            
-            groupedMessages[date].forEach(message => {
-                const messageElement = this.createMonitorMessageElement(message);
-                messageList.appendChild(messageElement);
-            });
+        activeMessages.forEach(message => {
+            const isMonitor = message.type === 'monitor';
+            const messageEl = document.createElement('div');
+            messageEl.className = `chat-message ${isMonitor ? 'message-sent' : 'message-received'}`;
+            messageEl.innerHTML = `
+                <div class="message-content">
+                    ${!isMonitor ? 
+                        `<div class="message-sender">${this.escapeHtml(message.sender)} (${message.unit || 'Driver'})</div>` : 
+                        `<div class="message-sender">Anda (MONITOR)</div>`}
+                    <div class="message-text">${this.escapeHtml(message.text)}</div>
+                    <div class="message-footer">
+                        <span class="message-time">${message.timeDisplay || new Date(message.timestamp).toLocaleTimeString('id-ID')}</span>
+                        ${isMonitor ? '<span class="message-status">✓</span>' : ''}
+                    </div>
+                </div>
+            `;
+            messageList.appendChild(messageEl);
         });
-        
-        const typingIndicator = document.createElement('div');
-        typingIndicator.id = 'monitorTypingIndicator';
-        typingIndicator.style.display = 'none';
-        messageList.appendChild(typingIndicator);
-        
+
         setTimeout(() => {
-            messageList.scrollTo({
-                top: messageList.scrollHeight,
-                behavior: 'smooth'
-            });
+            messageList.scrollTop = messageList.scrollHeight;
         }, 100);
     }
+
 
     groupMonitorMessagesByDate(messages) {
         const grouped = {};
@@ -3146,29 +3028,18 @@ updateDriverData(driverData) {
     updateMonitorChatUnitSelect() {
         const unitSelect = document.getElementById('monitorChatUnitSelect');
         if (!unitSelect) return;
-        
         const currentValue = unitSelect.value;
-        
         unitSelect.innerHTML = '<option value="">Pilih Unit...</option>';
-        
-        const allUnits = new Set([
-            ...this.monitorChatRefs.keys(),
-            ...Array.from(this.units.keys())
-        ]);
-        
+        const allUnits = new Set([...this.monitorChatRefs.keys(), ...Array.from(this.units.keys())]);
         allUnits.forEach(unitName => {
-            const unreadCount = this.monitorUnreadCounts.get(unitName) || 0;
+            const count = this.monitorUnreadCounts.get(unitName) || 0;
             const option = document.createElement('option');
             option.value = unitName;
-            option.textContent = unreadCount > 0 ? 
-                `${unitName} 💬 (${unreadCount} baru)` : unitName;
+            option.textContent = count > 0 ? `${unitName} 💬 (${count} baru)` : unitName;
             unitSelect.appendChild(option);
         });
-        
         if (currentValue && allUnits.has(currentValue)) {
             unitSelect.value = currentValue;
-        } else if (this.activeChatUnit && allUnits.has(this.activeChatUnit)) {
-            unitSelect.value = this.activeChatUnit;
         }
     }
 
@@ -3190,24 +3061,9 @@ updateDriverData(driverData) {
                 <button type="button" class="btn-close btn-sm" onclick="this.parentElement.parentElement.remove()"></button>
             </div>
         `;
-        
-        notification.style.cssText = `
-            position: fixed;
-            top: 80px;
-            right: 20px;
-            z-index: 9999;
-            min-width: 300px;
-            max-width: 400px;
-            animation: slideInRight 0.3s ease-out;
-        `;
-        
+        notification.style.cssText = `position: fixed; top: 80px; right: 20px; z-index: 9999; min-width: 300px; max-width: 400px;`;
         document.body.appendChild(notification);
-        
-        setTimeout(() => {
-            if (notification.parentNode) {
-                notification.remove();
-            }
-        }, 5000);
+        setTimeout(() => notification.remove(), 5000);
     }
 
     escapeHtml(text) {
@@ -3215,6 +3071,7 @@ updateDriverData(driverData) {
         div.textContent = text;
         return div.innerHTML;
     }
+
 
     // ===== ENHANCED CLEANUP WITH ANALYTICS SUPPORT =====
     cleanup() {
