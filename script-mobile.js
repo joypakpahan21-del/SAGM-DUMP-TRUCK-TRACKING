@@ -1239,7 +1239,7 @@ class EnhancedBackgroundTracker {
 
 
 
-// ===== HAVERSINE DISTANCE & REAL-TIME SPEED CALCULATOR =====
+// ===== HIGH-PRECISION HAVERSINE DISTANCE & REAL-TIME SPEED CALCULATOR =====
 class HaversineDistanceSpeedCalculator {
     constructor(mainStopwatch) {
         this.positionHistory = [];
@@ -1249,8 +1249,41 @@ class HaversineDistanceSpeedCalculator {
         this.lastCalculationTime = null;
         this.lastFirebaseSend = 0;
         this.firebaseDebounceDelay = 1000;
-        this.EARTH_RADIUS_KM = 6371;
-        this.MIN_TIME_DIFF = 0.1; 
+        
+        // ✅ HIGH-PRECISION EARTH RADIUS (WGS84 Ellipsoid)
+        this.EARTH_RADIUS_EQUATOR = 6378.137; // km at equator
+        this.EARTH_RADIUS_POLAR = 6356.752; // km at poles
+        this.FLATTENING = 1 / 298.257223563; // WGS84 flattening
+        
+        // ✅ ACCURACY THRESHOLDS
+        this.MIN_TIME_DIFF = 0.05; // 50ms minimum for ultra-responsive
+        this.MIN_DISTANCE_THRESHOLD = 0.5; // meters - ignore micro-movements
+        this.MAX_REALISTIC_SPEED = 250; // km/h - filter impossible speeds
+        this.MAX_ACCELERATION = 15; // m/s² - maximum realistic acceleration
+        
+        // ✅ KALMAN FILTER PARAMETERS for smoothing
+        this.kalmanQ = 0.001; // Process noise
+        this.kalmanR = 0.01; // Measurement noise
+        this.kalmanP = 1.0; // Initial estimate error
+        this.kalmanX = 0; // Initial state
+        this.kalmanK = 0; // Kalman gain
+        
+        // ✅ ADAPTIVE FILTERING
+        this.speedSmoothingWindow = [];
+        this.distanceSmoothingWindow = [];
+        this.maxSmoothingWindow = 5;
+        
+        // ✅ BATCH PROCESSOR for large datasets
+        this.batchProcessor = new NonBlockingBatchProcessor({
+            adaptiveMode: true,
+            memoryAware: true,
+            networkAware: true,
+            progressCallback: (progress) => this.handleBatchProgress(progress)
+        });
+        
+        // ✅ DUPLICATE DETECTOR for filtering redundant positions
+        this.duplicateDetector = new EnhancedDuplicateDetector();
+        
         this.getTimestampFn = null;
         this.mainStopwatch = mainStopwatch;
         this.getTimestampFn = () => {
@@ -1261,6 +1294,68 @@ class HaversineDistanceSpeedCalculator {
             return Date.now();
         };
         this.setupStopwatchSystem();
+        
+        console.log('🎯 High-Precision Haversine Calculator initialized with WGS84 ellipsoid model + Duplicate Detection');
+    }
+
+    handleBatchProgress(progress) {
+        if (progress.completed) {
+            console.log(`✅ Batch processing completed: ${progress.processed} positions processed`);
+        } else {
+            console.log(`📊 Batch progress: ${progress.percentage}% (${progress.processed}/${progress.total})`);
+        }
+    }
+
+    async processBulkPositions(positions) {
+        console.log(`🔄 Processing ${positions.length} positions in batch mode...`);
+        
+        const results = await this.batchProcessor.processLargeDataset(
+            positions,
+            (position) => this.calculateDistanceAndSpeed(position)
+        );
+        
+        return {
+            totalProcessed: results.processed,
+            totalFailed: results.failed,
+            finalDistance: this.totalDistance,
+            finalSpeed: this.currentSpeed,
+            results: results.processedItems
+        };
+    }
+
+    async processBulkPositionsWhenOnline(positions) {
+        return this.batchProcessor.processInstantlyWhenOnline(
+            positions,
+            (position) => this.calculateDistanceAndSpeed(position)
+        );
+    }
+
+    stopBatchProcessing() {
+        this.batchProcessor.stop();
+        console.log('🛑 Batch processing stopped');
+    }
+
+    destroyBatchProcessor() {
+        this.batchProcessor.destroy();
+        console.log('🗑️ Batch processor destroyed');
+    }
+
+    isDuplicatePosition(position, context = {}) {
+        return this.duplicateDetector.isDuplicatePosition(position, context);
+    }
+
+    getDuplicateDetectorStats() {
+        return {
+            historySize: this.duplicateDetector.positionHistory.size,
+            maxHistorySize: this.duplicateDetector.duplicateThresholds.maxHistorySize,
+            timeWindow: this.duplicateDetector.duplicateThresholds.timeWindow,
+            distanceThreshold: this.duplicateDetector.duplicateThresholds.distanceThreshold
+        };
+    }
+
+    clearDuplicateHistory() {
+        this.duplicateDetector.positionHistory.clear();
+        console.log('🧹 Duplicate detector history cleared');
     }
 
     setTimestampGetter(getTimestampFn) {
@@ -1274,7 +1369,7 @@ class HaversineDistanceSpeedCalculator {
 
     setupStopwatchSystem() {
         this.getSessionTimestamp = () => {
-            return this.stopwatch.getCurrentTimestamp();
+            return this.stopwatch?.getCurrentTimestamp() || Date.now();
         };
         if (this.realTimeProcessor) {
             this.realTimeProcessor.setStopwatch(this.getSessionTimestamp);
@@ -1282,41 +1377,163 @@ class HaversineDistanceSpeedCalculator {
 
         console.log('⏱️ Independent Stopwatch system initialized');
     }
+
     calculateHaversineDistance(lat1, lon1, lat2, lon2) {
-        // Validasi input
+        // ✅ HIGH-PRECISION VINCENTY FORMULA - More accurate than standard Haversine
+        // Accounts for Earth's ellipsoidal shape (WGS84)
+        
+        // Validate input
         if (!this.isValidCoordinate(lat1, lon1) || !this.isValidCoordinate(lat2, lon2)) {
             console.warn('❌ Invalid coordinates:', { lat1, lon1, lat2, lon2 });
             return 0;
         }
 
-        // Convert degrees to radians
-        const dLat = this.degreesToRadians(lat2 - lat1);
-        const dLon = this.degreesToRadians(lon2 - lon1);
+        // Convert to radians with high precision
+        const φ1 = this.toRadians(lat1);
+        const φ2 = this.toRadians(lat2);
+        const λ1 = this.toRadians(lon1);
+        const λ2 = this.toRadians(lon2);
         
-        const lat1Rad = this.degreesToRadians(lat1);
-        const lat2Rad = this.degreesToRadians(lat2);
-
-        // Haversine formula
-        const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-                  Math.cos(lat1Rad) * Math.cos(lat2Rad) *
-                  Math.sin(dLon / 2) * Math.sin(dLon / 2);
-                  
-        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-        const distance = this.EARTH_RADIUS_KM * c;
-
+        const Δλ = λ2 - λ1;
+        
+        // ✅ VINCENTY FORMULA (more accurate than Haversine for all distances)
+        // Calculate using WGS84 ellipsoid parameters
+        const a = this.EARTH_RADIUS_EQUATOR;
+        const b = this.EARTH_RADIUS_POLAR;
+        const f = this.FLATTENING;
+        
+        const U1 = Math.atan((1 - f) * Math.tan(φ1));
+        const U2 = Math.atan((1 - f) * Math.tan(φ2));
+        
+        const sinU1 = Math.sin(U1);
+        const cosU1 = Math.cos(U1);
+        const sinU2 = Math.sin(U2);
+        const cosU2 = Math.cos(U2);
+        
+        let λ = Δλ;
+        let λPrev;
+        let iterationLimit = 100;
+        let cosSqα, sinσ, cos2σM, cosσ, σ;
+        
+        do {
+            const sinλ = Math.sin(λ);
+            const cosλ = Math.cos(λ);
+            
+            sinσ = Math.sqrt(
+                (cosU2 * sinλ) * (cosU2 * sinλ) +
+                (cosU1 * sinU2 - sinU1 * cosU2 * cosλ) * (cosU1 * sinU2 - sinU1 * cosU2 * cosλ)
+            );
+            
+            if (sinσ === 0) return 0; // Co-incident points
+            
+            cosσ = sinU1 * sinU2 + cosU1 * cosU2 * cosλ;
+            σ = Math.atan2(sinσ, cosσ);
+            
+            const sinα = cosU1 * cosU2 * sinλ / sinσ;
+            cosSqα = 1 - sinα * sinα;
+            
+            cos2σM = cosσ - 2 * sinU1 * sinU2 / cosSqα;
+            if (isNaN(cos2σM)) cos2σM = 0; // Equatorial line
+            
+            const C = f / 16 * cosSqα * (4 + f * (4 - 3 * cosSqα));
+            λPrev = λ;
+            λ = Δλ + (1 - C) * f * sinα * 
+                (σ + C * sinσ * (cos2σM + C * cosσ * (-1 + 2 * cos2σM * cos2σM)));
+                
+        } while (Math.abs(λ - λPrev) > 1e-12 && --iterationLimit > 0);
+        
+        if (iterationLimit === 0) {
+            // Fallback to Haversine if Vincenty doesn't converge
+            return this.fallbackHaversine(lat1, lon1, lat2, lon2);
+        }
+        
+        const uSq = cosSqα * (a * a - b * b) / (b * b);
+        const A = 1 + uSq / 16384 * (4096 + uSq * (-768 + uSq * (320 - 175 * uSq)));
+        const B = uSq / 1024 * (256 + uSq * (-128 + uSq * (74 - 47 * uSq)));
+        
+        const Δσ = B * sinσ * (
+            cos2σM + B / 4 * (
+                cosσ * (-1 + 2 * cos2σM * cos2σM) -
+                B / 6 * cos2σM * (-3 + 4 * sinσ * sinσ) * (-3 + 4 * cos2σM * cos2σM)
+            )
+        );
+        
+        const distance = b * A * (σ - Δσ); // distance in km
+        
         return distance;
     }
 
+    fallbackHaversine(lat1, lon1, lat2, lon2) {
+        // High-precision Haversine as fallback
+        const φ1 = this.toRadians(lat1);
+        const φ2 = this.toRadians(lat2);
+        const Δφ = this.toRadians(lat2 - lat1);
+        const Δλ = this.toRadians(lon2 - lon1);
+        
+        const a = Math.sin(Δφ / 2) * Math.sin(Δφ / 2) +
+                  Math.cos(φ1) * Math.cos(φ2) *
+                  Math.sin(Δλ / 2) * Math.sin(Δλ / 2);
+                  
+        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+        
+        // Use mean Earth radius for better accuracy
+        const R = this.getEarthRadiusAtLatitude(lat1);
+        return R * c;
+    }
 
+    getEarthRadiusAtLatitude(lat) {
+        // Calculate Earth radius at specific latitude using WGS84
+        const φ = this.toRadians(lat);
+        const a = this.EARTH_RADIUS_EQUATOR;
+        const b = this.EARTH_RADIUS_POLAR;
+        
+        const numerator = Math.pow(a * a * Math.cos(φ), 2) + Math.pow(b * b * Math.sin(φ), 2);
+        const denominator = Math.pow(a * Math.cos(φ), 2) + Math.pow(b * Math.sin(φ), 2);
+        
+        return Math.sqrt(numerator / denominator);
+    }
+
+    toRadians(degrees) {
+        return degrees * Math.PI / 180;
+    }
 
     calculateDistanceAndSpeed(currentPosition, context = {}) {
         if (!currentPosition || !currentPosition.lat || !currentPosition.lng) {
             return { distance: 0, speed: 0, totalDistance: this.totalDistance };
         }
     
+        // ✅ CHECK FOR DUPLICATE POSITION FIRST
+        const positionForDuplicateCheck = {
+            coords: {
+                latitude: currentPosition.lat,
+                longitude: currentPosition.lng,
+                accuracy: currentPosition.accuracy
+            },
+            timestamp: currentPosition.timestamp
+        };
+        
+        if (this.duplicateDetector.isDuplicatePosition(positionForDuplicateCheck, context)) {
+            console.log('🔄 Duplicate position filtered, skipping calculation');
+            return {
+                distance: 0,
+                speed: this.currentSpeed,
+                totalDistance: this.totalDistance,
+                timestamp: this.getTimestampFn ? this.getTimestampFn() : Date.now(),
+                quality: 'duplicate',
+                confidence: 0,
+                context: {
+                    background: context.background || document.hidden,
+                    offline: context.offline || !navigator.onLine,
+                    lockScreen: context.lockScreen || false,
+                    source: context.source || 'unknown'
+                }
+            };
+        }
+    
         const timestampFn = typeof this.getTimestampFn === 'function' ? this.getTimestampFn : () => Date.now();
         const nowRaw = Number(timestampFn());
         const now = Number.isFinite(nowRaw) ? nowRaw : Date.now();
+        
         const currentPoint = {
             lat: currentPosition.lat,
             lng: currentPosition.lng,
@@ -1331,69 +1548,93 @@ class HaversineDistanceSpeedCalculator {
         let distance = 0;
         let speed = 0;
         let quality = 'high';
+        let confidence = 1.0;
     
-        // ✅ ENHANCED CALCULATION UNTUK BACKGROUND/OFFLINE/LOCKSCREEN
         if (this.lastPosition) {
-            // 1. HITUNG JARAK dengan Haversine (lebih akurat)
+            // ✅ ULTRA-HIGH PRECISION DISTANCE CALCULATION
             distance = this.calculateHaversineDistance(
                 this.lastPosition.lat, this.lastPosition.lng,
                 currentPoint.lat, currentPoint.lng
             );
             
+            // ✅ FILTER MICRO-MOVEMENTS (sub-meter noise)
+            const distanceMeters = distance * 1000;
+            if (distanceMeters < this.MIN_DISTANCE_THRESHOLD) {
+                console.log(`🔍 Filtered micro-movement: ${distanceMeters.toFixed(2)}m`);
+                return { 
+                    distance: 0, 
+                    speed: this.applyKalmanFilter(0), 
+                    totalDistance: this.totalDistance,
+                    quality: 'filtered',
+                    confidence: 0.3
+                };
+            }
+            
             const lastTimestamp = Number.isFinite(this.lastPosition.timestamp)
                 ? this.lastPosition.timestamp
                 : now;
             let timeDiffMs = currentPoint.timestamp - lastTimestamp;
-            if (!Number.isFinite(timeDiffMs)) {
-                timeDiffMs = 0;
-            }
-            if (timeDiffMs < 0) {
-                timeDiffMs = Math.abs(timeDiffMs);
-            }
-            const timeDiffHours = timeDiffMs / 1000 / 3600;
+            
+            if (!Number.isFinite(timeDiffMs)) timeDiffMs = 0;
+            if (timeDiffMs < 0) timeDiffMs = Math.abs(timeDiffMs);
+            
             const timeDiffSeconds = timeDiffMs / 1000;
+            const timeDiffHours = timeDiffSeconds / 3600;
     
-            // ✅ IMPROVED SPEED CALCULATION dengan akurasi tinggi
-            if (timeDiffHours > 0.0000278) { // ~0.1 detik
-                speed = distance / timeDiffHours;
+            // ✅ ULTRA-RESPONSIVE SPEED CALCULATION
+            if (timeDiffSeconds >= this.MIN_TIME_DIFF) {
+                // Raw speed calculation
+                const rawSpeed = distance / timeDiffHours;
                 
-                // ✅ ADAPTIVE SPEED VALIDATION berdasarkan kondisi
-                if (currentPoint.isBackground || currentPoint.isOffline || currentPoint.isLockScreen) {
-                    // Di background/offline/lockscreen, gunakan smoothing lebih agresif
-                    if (this.currentSpeed > 0) {
-                        // Smoothing dengan weighted average untuk stabilitas
-                        const smoothingFactor = 0.7; // 70% dari speed sebelumnya
-                        speed = (speed * 0.3) + (this.currentSpeed * smoothingFactor);
-                    }
+                // ✅ ACCELERATION-BASED VALIDATION
+                const isValidAcceleration = this.validateAcceleration(rawSpeed, timeDiffSeconds);
+                
+                if (!isValidAcceleration) {
+                    console.warn(`⚠️ Unrealistic acceleration detected, applying smoothing`);
+                    speed = this.smoothSpeedWithHistory(rawSpeed);
+                    confidence = 0.6;
+                    quality = 'smoothed';
+                } else {
+                    speed = rawSpeed;
                 }
                 
+                // ✅ APPLY KALMAN FILTER for optimal smoothing
+                speed = this.applyKalmanFilter(speed);
+                
+                // ✅ ADAPTIVE SMOOTHING based on conditions
+                if (currentPoint.isBackground || currentPoint.isOffline || currentPoint.isLockScreen) {
+                    speed = this.applyAdaptiveSmoothing(speed, 0.7);
+                    quality = quality === 'high' ? 'adaptive' : quality;
+                }
+                
+                // ✅ FINAL VALIDATION
                 speed = this.validateSpeed(speed);
                 
-                // ✅ QUALITY ASSESSMENT berdasarkan kondisi
-                if (currentPoint.accuracy && currentPoint.accuracy > 50) {
-                    quality = 'medium';
-                }
-                if (currentPoint.accuracy && currentPoint.accuracy > 100) {
-                    quality = 'low';
-                }
-                if (currentPoint.isOffline || currentPoint.isBackground) {
-                    quality = quality === 'high' ? 'medium' : quality;
-                }
+                // ✅ QUALITY ASSESSMENT
+                quality = this.assessSpeedQuality(speed, distance, timeDiffSeconds, currentPoint);
+                confidence = this.calculateConfidence(currentPoint, distance, timeDiffSeconds);
+                
+            } else {
+                // Time difference too small, use last known speed
+                speed = this.currentSpeed;
+                quality = 'maintained';
+                confidence = 0.8;
             }
             
-            // ✅ ENHANCED LOGGING dengan context
+            // ✅ ENHANCED LOGGING
             const contextInfo = [];
             if (currentPoint.isBackground) contextInfo.push('BG');
             if (currentPoint.isOffline) contextInfo.push('OFF');
             if (currentPoint.isLockScreen) contextInfo.push('LS');
             
-            console.log(`📏 [${contextInfo.join('/')}] Distance: ${(distance * 1000).toFixed(1)}m, Time: ${timeDiffMs}ms, Speed: ${speed.toFixed(1)}km/h, Quality: ${quality}`);
+            console.log(`🎯 [${contextInfo.join('/')}] Dist: ${(distance * 1000).toFixed(2)}m, Time: ${timeDiffMs}ms, Speed: ${speed.toFixed(2)}km/h, Quality: ${quality}, Conf: ${confidence.toFixed(2)}`);
             
-            // ✅ ACCUMULATE DISTANCE dengan quality check
-            if (distance > 0 && distance < 1) { // Validasi jarak realistis (< 1km per update)
+            // ✅ ACCUMULATE DISTANCE with strict validation
+            if (distance > 0 && distance < 0.5 && isValidAcceleration) { // < 500m per update
                 this.totalDistance += distance;
-            } else if (distance >= 1) {
-                console.warn(`⚠️ Unrealistic distance detected: ${distance}km - skipping accumulation`);
+                this.addToDistanceSmoothing(distance);
+            } else if (distance >= 0.5) {
+                console.warn(`⚠️ Unrealistic distance jump: ${distance}km - skipping`);
             }
         }
     
@@ -1402,55 +1643,12 @@ class HaversineDistanceSpeedCalculator {
     
         this.lastPosition = currentPoint;
         this.currentSpeed = speed;
+        
+        // ✅ Add to speed history for smoothing
+        this.addToSpeedSmoothing(speed);
     
-        // ✅ ENHANCED OFFLINE STORAGE dengan metadata lengkap
-        const positionData = {
-            lat: currentPosition.lat,
-            lng: currentPosition.lng,
-            timestamp: now,
-            speed: speed,
-            distance: distance,
-            totalDistance: this.totalDistance,
-            accuracy: currentPoint.accuracy,
-            quality: quality,
-            context: {
-                background: currentPoint.isBackground,
-                offline: currentPoint.isOffline,
-                lockScreen: currentPoint.isLockScreen,
-                source: currentPoint.source
-            },
-            unit: this.unitNumber,
-            driver: this.driverName
-        };
-    
-        // ✅ MULTI-STORAGE STRATEGY untuk reliability
-        try {
-            const offlinePositions = JSON.parse(localStorage.getItem('offline_positions') || '[]');
-            offlinePositions.push(positionData);
-            
-            // ✅ LIMIT SIZE untuk prevent memory issues (keep last 10000 positions)
-            if (offlinePositions.length > 10000) {
-                offlinePositions.splice(0, offlinePositions.length - 10000);
-            }
-            
-            localStorage.setItem('offline_positions', JSON.stringify(offlinePositions));
-            
-            // ✅ NOTIFY SERVICE WORKER untuk sync
-            if (!navigator.onLine || currentPoint.isBackground || currentPoint.isLockScreen) {
-                if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
-                    navigator.serviceWorker.controller.postMessage({
-                        type: 'CACHE_GPS_DATA',
-                        data: positionData
-                    });
-                }
-                
-                // ✅ REGISTER BACKGROUND SYNC untuk infinity sync
-                requestInfinityBackgroundSync('position-cache');
-            }
-        } catch (storageError) {
-            console.error('❌ Storage error, but calculation continues:', storageError);
-            // Continue even if storage fails - infinity mode
-        }
+        // ✅ MULTI-LAYER STORAGE STRATEGY
+        this.storePositionData(currentPoint, speed, distance, quality, confidence);
     
         return {
             distance: distance,
@@ -1460,8 +1658,160 @@ class HaversineDistanceSpeedCalculator {
             lastPosition: this.lastPosition,
             currentSpeed: this.currentSpeed,
             quality: quality,
-            context: positionData.context
+            confidence: confidence,
+            context: {
+                background: currentPoint.isBackground,
+                offline: currentPoint.isOffline,
+                lockScreen: currentPoint.isLockScreen,
+                source: currentPoint.source
+            }
         };
+    }
+
+    applyKalmanFilter(measurement) {
+        // Kalman filter prediction
+        this.kalmanP = this.kalmanP + this.kalmanQ;
+        
+        // Kalman gain
+        this.kalmanK = this.kalmanP / (this.kalmanP + this.kalmanR);
+        
+        // Update estimate
+        this.kalmanX = this.kalmanX + this.kalmanK * (measurement - this.kalmanX);
+        
+        // Update error covariance
+        this.kalmanP = (1 - this.kalmanK) * this.kalmanP;
+        
+        return this.kalmanX;
+    }
+
+    validateAcceleration(newSpeed, timeDiffSeconds) {
+        if (this.currentSpeed === 0 || timeDiffSeconds === 0) return true;
+        
+        const speedDiffKmh = Math.abs(newSpeed - this.currentSpeed);
+        const speedDiffMs = (speedDiffKmh * 1000) / 3600; // Convert to m/s
+        const acceleration = speedDiffMs / timeDiffSeconds; // m/s²
+        
+        if (acceleration > this.MAX_ACCELERATION) {
+            console.warn(`⚠️ High acceleration: ${acceleration.toFixed(2)} m/s²`);
+            return false;
+        }
+        
+        return true;
+    }
+
+    smoothSpeedWithHistory(rawSpeed) {
+        if (this.speedSmoothingWindow.length === 0) return rawSpeed;
+        
+        // Weighted average with recent speeds
+        const weights = this.speedSmoothingWindow.map((_, i) => Math.pow(2, i));
+        const weightSum = weights.reduce((a, b) => a + b, 0);
+        
+        let weightedSum = rawSpeed * 0.3; // 30% weight to new reading
+        this.speedSmoothingWindow.forEach((speed, i) => {
+            weightedSum += speed * (weights[i] / weightSum) * 0.7;
+        });
+        
+        return weightedSum;
+    }
+
+    applyAdaptiveSmoothing(speed, factor) {
+        if (this.currentSpeed > 0) {
+            return (speed * (1 - factor)) + (this.currentSpeed * factor);
+        }
+        return speed;
+    }
+
+    assessSpeedQuality(speed, distance, timeDiff, position) {
+        if (position.accuracy && position.accuracy > 50) return 'low';
+        if (position.accuracy && position.accuracy > 25) return 'medium';
+        if (distance < 0.01 && timeDiff > 5) return 'questionable';
+        if (speed > 150) return 'high-speed';
+        return 'high';
+    }
+
+    calculateConfidence(position, distance, timeDiff) {
+        let confidence = 1.0;
+        
+        // Accuracy impact
+        if (position.accuracy) {
+            if (position.accuracy > 50) confidence -= 0.4;
+            else if (position.accuracy > 25) confidence -= 0.2;
+            else if (position.accuracy > 10) confidence -= 0.1;
+        }
+        
+        // Time difference impact
+        if (timeDiff < 0.1) confidence -= 0.2;
+        else if (timeDiff > 10) confidence -= 0.1;
+        
+        // Distance impact
+        if (distance < 0.001) confidence -= 0.2;
+        else if (distance > 0.3) confidence -= 0.15;
+        
+        // Context impact
+        if (position.isBackground) confidence -= 0.05;
+        if (position.isOffline) confidence -= 0.05;
+        
+        return Math.max(0.1, Math.min(1.0, confidence));
+    }
+
+    addToSpeedSmoothing(speed) {
+        this.speedSmoothingWindow.push(speed);
+        if (this.speedSmoothingWindow.length > this.maxSmoothingWindow) {
+            this.speedSmoothingWindow.shift();
+        }
+    }
+
+    addToDistanceSmoothing(distance) {
+        this.distanceSmoothingWindow.push(distance);
+        if (this.distanceSmoothingWindow.length > this.maxSmoothingWindow) {
+            this.distanceSmoothingWindow.shift();
+        }
+    }
+
+    storePositionData(position, speed, distance, quality, confidence) {
+        const positionData = {
+            lat: position.lat,
+            lng: position.lng,
+            timestamp: position.timestamp,
+            speed: speed,
+            distance: distance,
+            totalDistance: this.totalDistance,
+            accuracy: position.accuracy,
+            quality: quality,
+            confidence: confidence,
+            context: {
+                background: position.isBackground,
+                offline: position.isOffline,
+                lockScreen: position.isLockScreen,
+                source: position.source
+            }
+        };
+
+        try {
+            const offlinePositions = JSON.parse(localStorage.getItem('offline_positions') || '[]');
+            offlinePositions.push(positionData);
+            
+            if (offlinePositions.length > 10000) {
+                offlinePositions.splice(0, offlinePositions.length - 10000);
+            }
+            
+            localStorage.setItem('offline_positions', JSON.stringify(offlinePositions));
+            
+            if (!navigator.onLine || position.isBackground || position.isLockScreen) {
+                if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
+                    navigator.serviceWorker.controller.postMessage({
+                        type: 'CACHE_GPS_DATA',
+                        data: positionData
+                    });
+                }
+                
+                if (typeof requestInfinityBackgroundSync === 'function') {
+                    requestInfinityBackgroundSync('position-cache');
+                }
+            }
+        } catch (storageError) {
+            console.error('❌ Storage error:', storageError);
+        }
     }
     
     isValidCoordinate(lat, lng) {
@@ -1477,18 +1827,8 @@ class HaversineDistanceSpeedCalculator {
         return true;
     }
 
-    /**
-     * Convert degrees to radians
-     */
-    degreesToRadians(degrees) {
-        return degrees * (Math.PI / 180);
-    }
-
-    /**
-     * Validasi kecepatan realistis
-     */
     validateSpeed(speed) {
-        const MAX_SPEED = 200;
+        const MAX_SPEED = this.MAX_REALISTIC_SPEED;
         const MIN_SPEED = 0;
         
         if (speed < MIN_SPEED || speed > MAX_SPEED || isNaN(speed)) {
@@ -1499,9 +1839,35 @@ class HaversineDistanceSpeedCalculator {
         return speed;
     }
 
-    /**
-     * Update dengan data GPS langsung
-     */
+    resetKalmanFilter() {
+        this.kalmanP = 1.0;
+        this.kalmanX = 0;
+        this.kalmanK = 0;
+        console.log('🔄 Kalman filter reset');
+    }
+
+    getAverageSpeed() {
+        if (this.speedSmoothingWindow.length === 0) return 0;
+        const sum = this.speedSmoothingWindow.reduce((a, b) => a + b, 0);
+        return sum / this.speedSmoothingWindow.length;
+    }
+
+    getCalculatorStats() {
+        return {
+            totalDistance: this.totalDistance,
+            currentSpeed: this.currentSpeed,
+            speedSmoothingWindow: this.speedSmoothingWindow.length,
+            distanceSmoothingWindow: this.distanceSmoothingWindow.length,
+            kalmanState: {
+                X: this.kalmanX,
+                P: this.kalmanP,
+                K: this.kalmanK
+            },
+            lastPosition: this.lastPosition,
+            averageSpeed: this.getAverageSpeed()
+        };
+    }
+
     updateWithGPSPosition(gpsPosition) {
         if (!gpsPosition || !gpsPosition.coords) {
             console.warn('❌ Invalid GPS position provided to calculator');
@@ -1516,6 +1882,7 @@ class HaversineDistanceSpeedCalculator {
         const processedPosition = {
             lat: gpsPosition.coords.latitude,
             lng: gpsPosition.coords.longitude,
+            accuracy: gpsPosition.coords.accuracy,
             timestamp: this.getTimestampFn ? this.getTimestampFn() : Date.now()
         };
         const result = this.calculateDistanceAndSpeed(processedPosition);
@@ -1530,36 +1897,39 @@ class HaversineDistanceSpeedCalculator {
             };
         }
 
-
-        return this.calculateDistanceAndSpeed(processedPosition);
+        return result;
     }
 
-    /**
-     * Get metrics saat ini
-     */
     getCurrentMetrics() {
         return {
             currentSpeed: this.currentSpeed,
             totalDistance: this.totalDistance,
             lastPosition: this.lastPosition,
-            lastCalculation: this.lastCalculationTime
+            lastCalculation: this.lastCalculationTime,
+            averageSpeed: this.getAverageSpeed(),
+            kalmanState: this.getCalculatorStats().kalmanState
         };
     }
 
-    /**
-     * Get persistent state snapshot untuk disimpan
-     */
     getState() {
         return {
             totalDistance: this.totalDistance,
+            currentSpeed: this.currentSpeed,
             lastPosition: this.lastPosition
                 ? {
                     lat: this.lastPosition.lat,
                     lng: this.lastPosition.lng,
-                    timestamp: this.lastPosition.timestamp ? this.lastPosition.timestamp.toISOString() : null
+                    timestamp: this.lastPosition.timestamp
                 }
                 : null,
-            lastCalculationTime: this.lastCalculationTime ? this.lastCalculationTime.toISOString() : null
+            lastCalculationTime: this.lastCalculationTime,
+            kalmanState: {
+                X: this.kalmanX,
+                P: this.kalmanP,
+                K: this.kalmanK
+            },
+            speedSmoothingWindow: [...this.speedSmoothingWindow],
+            distanceSmoothingWindow: [...this.distanceSmoothingWindow]
         };
     }
 
@@ -1570,17 +1940,667 @@ class HaversineDistanceSpeedCalculator {
             this.totalDistance = state.totalDistance;
         }
 
+        if (typeof state.currentSpeed === 'number' && isFinite(state.currentSpeed)) {
+            this.currentSpeed = state.currentSpeed;
+        }
+
         if (state.lastPosition && state.lastPosition.lat !== undefined && state.lastPosition.lng !== undefined) {
             this.lastPosition = {
                 lat: state.lastPosition.lat,
                 lng: state.lastPosition.lng,
-                timestamp: state.lastPosition.timestamp ? new Date(state.lastPosition.timestamp) : new Date()
+                timestamp: state.lastPosition.timestamp
             };
         }
 
         if (state.lastCalculationTime) {
-            this.lastCalculationTime = new Date(state.lastCalculationTime);
+            this.lastCalculationTime = state.lastCalculationTime;
         }
+
+        if (state.kalmanState) {
+            this.kalmanX = state.kalmanState.X || 0;
+            this.kalmanP = state.kalmanState.P || 1.0;
+            this.kalmanK = state.kalmanState.K || 0;
+        }
+
+        if (Array.isArray(state.speedSmoothingWindow)) {
+            this.speedSmoothingWindow = [...state.speedSmoothingWindow];
+        }
+
+        if (Array.isArray(state.distanceSmoothingWindow)) {
+            this.distanceSmoothingWindow = [...state.distanceSmoothingWindow];
+        }
+
+        console.log('✅ Calculator state restored with enhanced precision data');
+    }
+
+    reset() {
+        this.totalDistance = 0;
+        this.currentSpeed = 0;
+        this.lastPosition = null;
+        this.lastCalculationTime = null;
+        this.speedSmoothingWindow = [];
+        this.distanceSmoothingWindow = [];
+        this.resetKalmanFilter();
+        
+        // Reset batch processor if exists
+        if (this.batchProcessor) {
+            this.batchProcessor.stop();
+        }
+        
+        // Reset duplicate detector
+        if (this.duplicateDetector) {
+            this.duplicateDetector.positionHistory.clear();
+        }
+        
+        console.log('🔄 High-Precision Calculator reset');
+    }
+
+    destroy() {
+        this.reset();
+        
+        // Cleanup batch processor
+        if (this.batchProcessor) {
+            this.batchProcessor.destroy();
+            this.batchProcessor = null;
+        }
+        
+        // Cleanup duplicate detector
+        if (this.duplicateDetector) {
+            this.duplicateDetector.destroy();
+            this.duplicateDetector = null;
+        }
+        
+        console.log('🗑️ High-Precision Calculator destroyed');
+    }
+}
+
+// ===== ENHANCED DUPLICATE DETECTOR =====
+class EnhancedDuplicateDetector {
+    constructor() {
+        this.positionHistory = new Map();
+        this.duplicateThresholds = {
+            timeWindow: 2000,
+            distanceThreshold: 10,
+            accuracyThreshold: 50,
+            maxHistorySize: 1000
+        };
+        
+        this.cleanupInterval = setInterval(() => this.cleanupOldPositions(), 60000);
+    }
+
+    isDuplicatePosition(position, context = {}) {
+        if (!position?.coords) return true;
+        
+        const positionKey = this.generatePositionKey(position);
+        const now = this.getCurrentTimestamp();
+        
+        if (this.positionHistory.has(positionKey)) {
+            console.log('🔄 Exact duplicate position detected');
+            return true;
+        }
+        
+        const isNearbyDuplicate = this.checkNearbyDuplicates(position, now, context);
+        if (isNearbyDuplicate) {
+            return true;
+        }
+        
+        this.addToHistory(positionKey, {
+            lat: position.coords.latitude,
+            lng: position.coords.longitude,
+            timestamp: now,
+            accuracy: position.coords.accuracy,
+            source: context.source || 'unknown'
+        });
+        
+        return false;
+    }
+
+    generatePositionKey(position) {
+        const lat = position.coords.latitude.toFixed(6);
+        const lng = position.coords.longitude.toFixed(6);
+        const time = Math.floor((position.timestamp || Date.now()) / 1000);
+        return `${lat}_${lng}_${time}`;
+    }
+
+    checkNearbyDuplicates(position, currentTime, context) {
+        const newPoint = {
+            lat: position.coords.latitude,
+            lng: position.coords.longitude,
+            timestamp: currentTime,
+            accuracy: position.coords.accuracy
+        };
+        
+        let foundDuplicate = false;
+        let closestDistance = Infinity;
+        
+        for (const [key, existingPoint] of this.positionHistory.entries()) {
+            const timeDiff = Math.abs(newPoint.timestamp - existingPoint.timestamp);
+            
+            if (timeDiff > this.duplicateThresholds.timeWindow) {
+                continue;
+            }
+            
+            const distance = this.calculateDistance(
+                newPoint.lat, newPoint.lng,
+                existingPoint.lat, existingPoint.lng
+            );
+            
+            closestDistance = Math.min(closestDistance, distance);
+            
+            const accuracyBuffer = Math.max(newPoint.accuracy, existingPoint.accuracy) / 2;
+            const effectiveThreshold = this.duplicateThresholds.distanceThreshold + accuracyBuffer;
+            
+            if (distance < effectiveThreshold) {
+                console.log(`🔄 Nearby duplicate detected: ${distance.toFixed(2)}m within ${timeDiff}ms`);
+                foundDuplicate = true;
+                break;
+            }
+        }
+        
+        if (context.debug && !foundDuplicate && closestDistance < Infinity) {
+            console.log(`📍 Nearest position: ${closestDistance.toFixed(2)}m away`);
+        }
+        
+        return foundDuplicate;
+    }
+
+    calculateDistance(lat1, lon1, lat2, lon2) {
+        const R = 6371000;
+        const dLat = (lat2 - lat1) * Math.PI / 180;
+        const dLon = (lon2 - lon1) * Math.PI / 180;
+        const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                  Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * 
+                  Math.sin(dLon/2) * Math.sin(dLon/2);
+        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+        return R * c;
+    }
+
+    addToHistory(key, position) {
+        this.positionHistory.set(key, position);
+        
+        if (this.positionHistory.size > this.duplicateThresholds.maxHistorySize) {
+            this.cleanupOldPositions();
+        }
+    }
+
+    cleanupOldPositions() {
+        const now = this.getCurrentTimestamp();
+        const cutoffTime = now - (this.duplicateThresholds.timeWindow * 2);
+        
+        for (const [key, position] of this.positionHistory.entries()) {
+            if (position.timestamp < cutoffTime) {
+                this.positionHistory.delete(key);
+            }
+        }
+        
+        console.log(`🧹 Duplicate detector cleanup: ${this.positionHistory.size} positions in history`);
+    }
+
+    getCurrentTimestamp() {
+        return window.dtLogger?.unifiedTimestampManager?.getUnifiedTimestamp() || Date.now();
+    }
+
+    destroy() {
+        clearInterval(this.cleanupInterval);
+        this.positionHistory.clear();
+    }
+}
+
+// ===== NON-BLOCKING BATCH PROCESSOR =====
+class NonBlockingBatchProcessor {
+    constructor(options = {}) {
+        this.config = {
+            maxBatchSize: Infinity,
+            delayBetweenBatches: 0,
+            concurrencyLimit: Infinity,
+            progressCallback: options.progressCallback || null,
+            adaptiveMode: true,
+            memoryAware: true,
+            networkAware: true
+        };
+        
+        this.isProcessing = false;
+        this.currentBatch = 0;
+        this.totalBatches = 0;
+        this.processingQueue = [];
+        this.memoryMonitor = setInterval(() => this.monitorMemory(), 10000);
+    }
+
+    getAdaptiveBatchSize() {
+        if (!this.config.adaptiveMode) return Infinity;
+        
+        const memoryPressure = this.getMemoryPressure();
+        const networkStatus = this.getNetworkStatus();
+        
+        if (memoryPressure > 0.9) return 100;
+        if (memoryPressure > 0.8) return 500;
+        if (networkStatus === 'poor') return 200;
+        if (networkStatus === 'average') return 1000;
+        if (networkStatus === 'good') return 5000;
+        
+        return Infinity;
+    }
+
+    getMemoryPressure() {
+        if (performance.memory) {
+            return performance.memory.usedJSHeapSize / performance.memory.jsHeapSizeLimit;
+        }
+        return 0.5;
+    }
+
+    getNetworkStatus() {
+        if (!navigator.onLine) return 'offline';
+        if (navigator.connection) {
+            const conn = navigator.connection;
+            if (conn.effectiveType === '4g') return 'good';
+            if (conn.effectiveType === '3g') return 'average';
+            if (conn.effectiveType === '2g') return 'poor';
+        }
+        return 'unknown';
+    }
+
+    async processLargeDataset(items, processorFn) {
+        if (this.isProcessing) {
+            console.warn('⚠️ Processor already running, queuing new request');
+            this.processingQueue.push({ items, processorFn });
+            return;
+        }
+
+        this.isProcessing = true;
+        this.currentBatch = 0;
+        
+        try {
+            const adaptiveBatchSize = this.getAdaptiveBatchSize();
+            this.totalBatches = Math.ceil(items.length / adaptiveBatchSize);
+            
+            console.log(`🔄 Processing ${items.length} items with adaptive batch size: ${adaptiveBatchSize}`);
+
+            const results = {
+                processed: 0,
+                failed: 0,
+                batches: 0,
+                errors: [],
+                processedItems: []
+            };
+
+            for (let i = 0; i < items.length; i += adaptiveBatchSize) {
+                if (!this.isProcessing) break;
+
+                const batchSize = Math.min(adaptiveBatchSize, items.length - i);
+                const batch = items.slice(i, i + batchSize);
+                this.currentBatch++;
+
+                this.updateProgress(i, items.length);
+
+                const batchResults = await this.processBatch(batch, processorFn);
+                results.processed += batchResults.processed;
+                results.failed += batchResults.failed;
+                results.batches++;
+                results.processedItems.push(...batchResults.processedItems);
+
+                if (batchResults.error) {
+                    results.errors.push(batchResults.error);
+                }
+
+                if (this.currentBatch % 10 === 0) {
+                    await this.yieldToMainThread();
+                }
+
+                if (this.config.memoryAware) {
+                    const currentMemoryPressure = this.getMemoryPressure();
+                    if (currentMemoryPressure > 0.9) {
+                        console.warn('⚠️ High memory pressure, increasing yield frequency');
+                        await this.yieldToMainThread();
+                    }
+                }
+            }
+
+            this.notifyCompletion(results);
+            return results;
+
+        } finally {
+            this.isProcessing = false;
+            this.processNextInQueue();
+        }
+    }
+
+    async processBatch(batch, processorFn) {
+        const batchResults = {
+            processed: 0,
+            failed: 0,
+            error: null,
+            processedItems: []
+        };
+
+        try {
+            const promises = batch.map(item => 
+                this.processItemSafe(item, processorFn)
+            );
+            
+            const results = await Promise.allSettled(promises);
+            
+            results.forEach((result, index) => {
+                if (result.status === 'fulfilled') {
+                    batchResults.processed++;
+                    batchResults.processedItems.push(result.value);
+                } else {
+                    batchResults.failed++;
+                    console.error('Batch item failed:', result.reason);
+                }
+            });
+            
+        } catch (error) {
+            batchResults.error = error;
+            console.error('Batch processing failed:', error);
+        }
+
+        return batchResults;
+    }
+
+    async processItemSafe(item, processorFn) {
+        try {
+            return await processorFn(item);
+        } catch (error) {
+            console.warn('Item processing failed, continuing:', error);
+            throw error;
+        }
+    }
+
+    async processNextInQueue() {
+        if (this.processingQueue.length > 0) {
+            const next = this.processingQueue.shift();
+            console.log(`📂 Processing next queue item (${this.processingQueue.length} remaining)`);
+            await this.processLargeDataset(next.items, next.processorFn);
+        }
+    }
+
+    async processInstantlyWhenOnline(items, processorFn) {
+        if (!navigator.onLine) {
+            console.log('📴 Offline - queuing for when online');
+            this.processingQueue.push({ items, processorFn });
+            return;
+        }
+
+        this.processingQueue.unshift({ items, processorFn });
+        
+        if (!this.isProcessing) {
+            await this.processNextInQueue();
+        }
+    }
+
+    updateProgress(processed, total) {
+        if (this.config.progressCallback) {
+            const percentage = ((processed / total) * 100).toFixed(1);
+            this.config.progressCallback({
+                processed,
+                total,
+                percentage,
+                currentBatch: this.currentBatch,
+                totalBatches: this.totalBatches
+            });
+        }
+    }
+
+    async yieldToMainThread() {
+        return new Promise(resolve => setTimeout(resolve, 0));
+    }
+
+    monitorMemory() {
+        if (this.config.memoryAware && performance.memory) {
+            const pressure = this.getMemoryPressure();
+            if (pressure > 0.95) {
+                console.warn('🚨 Critical memory pressure, consider pausing processing');
+            }
+        }
+    }
+
+    notifyCompletion(results) {
+        if (this.config.progressCallback) {
+            this.config.progressCallback({
+                completed: true,
+                ...results
+            });
+        }
+    }
+
+    stop() {
+        this.isProcessing = false;
+    }
+
+    destroy() {
+        this.isProcessing = false;
+        clearInterval(this.memoryMonitor);
+        this.processingQueue = [];
+        console.log('🛑 NonBlockingBatchProcessor destroyed');
+    }
+}
+
+// ===== NON-BLOCKING BATCH PROCESSOR =====
+class NonBlockingBatchProcessor {
+    constructor(options = {}) {
+        this.config = {
+            maxBatchSize: Infinity,
+            delayBetweenBatches: 0,
+            concurrencyLimit: Infinity,
+            progressCallback: options.progressCallback || null,
+            adaptiveMode: true,
+            memoryAware: true,
+            networkAware: true
+        };
+        
+        this.isProcessing = false;
+        this.currentBatch = 0;
+        this.totalBatches = 0;
+        this.processingQueue = [];
+        this.memoryMonitor = setInterval(() => this.monitorMemory(), 10000);
+    }
+
+    getAdaptiveBatchSize() {
+        if (!this.config.adaptiveMode) return Infinity;
+        
+        const memoryPressure = this.getMemoryPressure();
+        const networkStatus = this.getNetworkStatus();
+        
+        if (memoryPressure > 0.9) return 100;
+        if (memoryPressure > 0.8) return 500;
+        if (networkStatus === 'poor') return 200;
+        if (networkStatus === 'average') return 1000;
+        if (networkStatus === 'good') return 5000;
+        
+        return Infinity;
+    }
+
+    getMemoryPressure() {
+        if (performance.memory) {
+            return performance.memory.usedJSHeapSize / performance.memory.jsHeapSizeLimit;
+        }
+        return 0.5;
+    }
+
+    getNetworkStatus() {
+        if (!navigator.onLine) return 'offline';
+        if (navigator.connection) {
+            const conn = navigator.connection;
+            if (conn.effectiveType === '4g') return 'good';
+            if (conn.effectiveType === '3g') return 'average';
+            if (conn.effectiveType === '2g') return 'poor';
+        }
+        return 'unknown';
+    }
+
+    async processLargeDataset(items, processorFn) {
+        if (this.isProcessing) {
+            console.warn('⚠️ Processor already running, queuing new request');
+            this.processingQueue.push({ items, processorFn });
+            return;
+        }
+
+        this.isProcessing = true;
+        this.currentBatch = 0;
+        
+        try {
+            const adaptiveBatchSize = this.getAdaptiveBatchSize();
+            this.totalBatches = Math.ceil(items.length / adaptiveBatchSize);
+            
+            console.log(`🔄 Processing ${items.length} items with adaptive batch size: ${adaptiveBatchSize}`);
+
+            const results = {
+                processed: 0,
+                failed: 0,
+                batches: 0,
+                errors: [],
+                processedItems: []
+            };
+
+            for (let i = 0; i < items.length; i += adaptiveBatchSize) {
+                if (!this.isProcessing) break;
+
+                const batchSize = Math.min(adaptiveBatchSize, items.length - i);
+                const batch = items.slice(i, i + batchSize);
+                this.currentBatch++;
+
+                this.updateProgress(i, items.length);
+
+                const batchResults = await this.processBatch(batch, processorFn);
+                results.processed += batchResults.processed;
+                results.failed += batchResults.failed;
+                results.batches++;
+                results.processedItems.push(...batchResults.processedItems);
+
+                if (batchResults.error) {
+                    results.errors.push(batchResults.error);
+                }
+
+                if (this.currentBatch % 10 === 0) {
+                    await this.yieldToMainThread();
+                }
+
+                if (this.config.memoryAware) {
+                    const currentMemoryPressure = this.getMemoryPressure();
+                    if (currentMemoryPressure > 0.9) {
+                        console.warn('⚠️ High memory pressure, increasing yield frequency');
+                        await this.yieldToMainThread();
+                    }
+                }
+            }
+
+            this.notifyCompletion(results);
+            return results;
+
+        } finally {
+            this.isProcessing = false;
+            this.processNextInQueue();
+        }
+    }
+
+    async processBatch(batch, processorFn) {
+        const batchResults = {
+            processed: 0,
+            failed: 0,
+            error: null,
+            processedItems: []
+        };
+
+        try {
+            const promises = batch.map(item => 
+                this.processItemSafe(item, processorFn)
+            );
+            
+            const results = await Promise.allSettled(promises);
+            
+            results.forEach((result, index) => {
+                if (result.status === 'fulfilled') {
+                    batchResults.processed++;
+                    batchResults.processedItems.push(result.value);
+                } else {
+                    batchResults.failed++;
+                    console.error('Batch item failed:', result.reason);
+                }
+            });
+            
+        } catch (error) {
+            batchResults.error = error;
+            console.error('Batch processing failed:', error);
+        }
+
+        return batchResults;
+    }
+
+    async processItemSafe(item, processorFn) {
+        try {
+            return await processorFn(item);
+        } catch (error) {
+            console.warn('Item processing failed, continuing:', error);
+            throw error;
+        }
+    }
+
+    async processNextInQueue() {
+        if (this.processingQueue.length > 0) {
+            const next = this.processingQueue.shift();
+            console.log(`📂 Processing next queue item (${this.processingQueue.length} remaining)`);
+            await this.processLargeDataset(next.items, next.processorFn);
+        }
+    }
+
+    async processInstantlyWhenOnline(items, processorFn) {
+        if (!navigator.onLine) {
+            console.log('📴 Offline - queuing for when online');
+            this.processingQueue.push({ items, processorFn });
+            return;
+        }
+
+        this.processingQueue.unshift({ items, processorFn });
+        
+        if (!this.isProcessing) {
+            await this.processNextInQueue();
+        }
+    }
+
+    updateProgress(processed, total) {
+        if (this.config.progressCallback) {
+            const percentage = ((processed / total) * 100).toFixed(1);
+            this.config.progressCallback({
+                processed,
+                total,
+                percentage,
+                currentBatch: this.currentBatch,
+                totalBatches: this.totalBatches
+            });
+        }
+    }
+
+    async yieldToMainThread() {
+        return new Promise(resolve => setTimeout(resolve, 0));
+    }
+
+    monitorMemory() {
+        if (this.config.memoryAware && performance.memory) {
+            const pressure = this.getMemoryPressure();
+            if (pressure > 0.95) {
+                console.warn('🚨 Critical memory pressure, consider pausing processing');
+            }
+        }
+    }
+
+    notifyCompletion(results) {
+        if (this.config.progressCallback) {
+            this.config.progressCallback({
+                completed: true,
+                ...results
+            });
+        }
+    }
+
+    stop() {
+        this.isProcessing = false;
+    }
+
+    destroy() {
+        this.isProcessing = false;
+        clearInterval(this.memoryMonitor);
+        this.processingQueue = [];
+        console.log('🛑 NonBlockingBatchProcessor destroyed');
     }
 }
 
@@ -8870,33 +9890,33 @@ class LogoutManager {
         };
     }
 }
-
-// ===== MODIFIKASI UNLIMITED GPS LOGGER DENGAN LOGOUT MANAGER =====
-// Class pertama dihapus - menggunakan versi yang lebih lengkap di bawah (baris 9094)
-
-// ===== MODIFIKASI MAIN LOGGER UNTUK UNLIMITED OPERATION =====
 class UnlimitedDTGPSLoggerWithLogout extends UnlimitedDTGPSLogger {
     constructor() {
         super();
-        
         // ✅ INFINITY COMPONENTS
         this.infinityManager = new InfinityTrackingManager(this);
         this.backgroundPoller = new InfinityGPSPoller(this, { 
             pollDelay: 1000,
             enableHighAccuracy: true
         });
-        
         // Load previous infinity state
         setTimeout(() => {
             if (this.infinityManager.loadInfinityState()) {
                 this.addLog('♾️ Infinity tracking resumed from previous session', 'success');
             }
         }, 2000);
-        
         this.logoutManager = new LogoutManager(this);
         this.setupLogoutHandlers();
-        
-        console.log('♾️ UNLIMITED GPS Logger with Infinity Mode initialized');
+
+        // ✅ CHAT SYSTEM PROPERTIES
+        this.isChatOpen = false;
+        this.chatInitialized = false;
+        this.unreadCount = 0;
+        this.chatMessages = [];
+        this.chatRef = null;
+        this.driverData = null;
+
+        console.log('♾️ UNLIMITED GPS Logger with Infinity Mode and Chat initialized');
     }
 
     // ===== MODIFIED START JOURNEY dengan Infinity Mode =====
@@ -8911,13 +9931,10 @@ class UnlimitedDTGPSLoggerWithLogout extends UnlimitedDTGPSLogger {
         this.totalDistance = 0;
         this.dataPoints = 0;
 
-        // ✅ START STOPWATCH UTAMA
         if (this.stopwatch) {
             this.stopwatch.start();
             console.log('⏱️ MAIN STOPWATCH STARTED for distance calculation');
         }
-
-        // ✅ ENABLE INFINITY MODE
         if (this.infinityManager) {
             this.infinityManager.enableInfinityMode();
         }
@@ -8925,34 +9942,24 @@ class UnlimitedDTGPSLoggerWithLogout extends UnlimitedDTGPSLogger {
         this.resetRealTimeTracking();
         this.startRealGPSTracking();
         this.startDataTransmission();
-
         this.addLog('♾️ PERJALANAN DIMULAI - INFINITY MODE AKTIF', 'success');
         this.updateJourneyDisplay();
     };
 
     // ===== MODIFIED LOGOUT dengan Infinity Mode Cleanup =====
     async initiateLogout() {
-        // Konfirmasi logout jika journey aktif
         if (this.journeyStatus === 'started') {
             const confirmLogout = confirm(
                 'Perjalanan masih aktif. Yakin ingin logout? ' +
                 'Data akan disimpan dan bisa dilanjutkan nanti.'
             );
-            
-            if (!confirmLogout) {
-                return;
-            }
+            if (!confirmLogout) return;
         }
 
-        // Show loading state
         this.addLog('Memulai proses logout...', 'info');
-        
-        // ✅ DISABLE INFINITY MODE SEBELUM LOGOUT
         if (this.infinityManager) {
             this.infinityManager.disableInfinityMode();
         }
-
-        // Disable UI selama logout
         this.disableUI();
 
         try {
@@ -8965,18 +9972,13 @@ class UnlimitedDTGPSLoggerWithLogout extends UnlimitedDTGPSLogger {
     }
 
     setupLogoutHandlers() {
-        // Setup logout button handler
         const logoutBtn = document.getElementById('logoutBtn');
         if (logoutBtn) {
             logoutBtn.addEventListener('click', () => this.initiateLogout());
         }
-
-        // Add logout callbacks untuk components
         this.logoutManager.addLogoutCallback((phase) => {
             this.handleComponentLogout(phase);
         });
-
-        // Handle browser tab close/window unload
         window.addEventListener('beforeunload', (event) => {
             this.handleBrowserClose(event);
         });
@@ -8984,103 +9986,57 @@ class UnlimitedDTGPSLoggerWithLogout extends UnlimitedDTGPSLogger {
 
     handleComponentLogout(phase) {
         console.log(`🔧 Component logout phase: ${phase}`);
-        
         switch (phase) {
             case 'start':
-                // Components should prepare for logout
                 this.prepareComponentsForLogout();
                 break;
-                
             case 'complete':
-                // Components cleanup after logout
                 this.cleanupComponentsAfterLogout();
                 break;
         }
     }
 
     prepareComponentsForLogout() {
-        // Stop semua real-time updates
         this.stopRealTimeUpdates();
-        
-        // ✅ STOP INFINITY BACKGROUND POLLING
-        if (this.backgroundPoller) {
-            this.backgroundPoller.stop();
-        }
-        
-        // Disable user interactions
+        if (this.backgroundPoller) this.backgroundPoller.stop();
         this.disableUserInteractions();
-        
-        // Save component states
         this.saveComponentStates();
     }
 
     cleanupComponentsAfterLogout() {
-        // Reset component states
         this.resetComponentStates();
-        
-        // Clear component data
         this.clearComponentData();
-        
-        // Enable UI untuk login berikutnya
         this.enableUI();
     }
 
     handleBrowserClose(event) {
         if (this.journeyStatus === 'started') {
-            // ✅ SAVE INFINITY STATE SEBELUM TUTUP
-            if (this.infinityManager) {
-                this.infinityManager.saveInfinityState();
-            }
-            
-            // Save state sebelum tab ditutup
+            if (this.infinityManager) this.infinityManager.saveInfinityState();
             this.saveSystemState();
-            
-            // Konfirmasi untuk hindari accidental close
             event.preventDefault();
-            event.returnValue = 
-                'Perjalanan masih aktif. Data telah disimpan dan bisa dilanjutkan saat membuka aplikasi kembali.';
+            event.returnValue = 'Perjalanan masih aktif. Data telah disimpan dan bisa dilanjutkan saat membuka aplikasi kembali.';
             return event.returnValue;
         }
     }
 
     stopRealTimeUpdates() {
-        // Stop semua real-time UI updates
         const updateElements = document.querySelectorAll('[data-real-time-update]');
-        updateElements.forEach(element => {
-            element.classList.add('update-paused');
-        });
+        updateElements.forEach(el => el.classList.add('update-paused'));
     }
 
     disableUserInteractions() {
-        // Disable semua buttons dan form controls
-        const interactiveElements = document.querySelectorAll(
-            'button, input, select, textarea'
-        );
-        
-        interactiveElements.forEach(element => {
-            element.disabled = true;
-        });
-        
-        // Add loading indicator
+        const interactiveElements = document.querySelectorAll('button, input, select, textarea');
+        interactiveElements.forEach(el => el.disabled = true);
         this.showLoadingIndicator('Logging out...');
     }
 
     enableUI() {
-        // Enable semua buttons dan form controls
-        const interactiveElements = document.querySelectorAll(
-            'button, input, select, textarea'
-        );
-        
-        interactiveElements.forEach(element => {
-            element.disabled = false;
-        });
-        
-        // Remove loading indicator
+        const interactiveElements = document.querySelectorAll('button, input, select, textarea');
+        interactiveElements.forEach(el => el.disabled = false);
         this.hideLoadingIndicator();
     }
 
     showLoadingIndicator(message) {
-        // Create atau show loading indicator
         let loader = document.getElementById('logoutLoader');
         if (!loader) {
             loader = document.createElement('div');
@@ -9097,13 +10053,10 @@ class UnlimitedDTGPSLoggerWithLogout extends UnlimitedDTGPSLogger {
 
     hideLoadingIndicator() {
         const loader = document.getElementById('logoutLoader');
-        if (loader) {
-            loader.style.display = 'none';
-        }
+        if (loader) loader.style.display = 'none';
     }
 
     saveComponentStates() {
-        // Save state dari berbagai components
         const componentStates = {
             chat: {
                 isOpen: this.isChatOpen,
@@ -9113,10 +10066,8 @@ class UnlimitedDTGPSLoggerWithLogout extends UnlimitedDTGPSLogger {
                 lastActiveTab: this.getActiveTab(),
                 scrollPositions: this.getScrollPositions()
             },
-            // ✅ SAVE INFINITY STATE
             infinity: this.infinityManager ? this.infinityManager.getInfinityStats() : null
         };
-        
         this.storageManager.saveAppSettings({
             componentStates,
             lastLogout: new Date().toISOString()
@@ -9124,67 +10075,41 @@ class UnlimitedDTGPSLoggerWithLogout extends UnlimitedDTGPSLogger {
     }
 
     resetComponentStates() {
-        // Reset semua component states
         this.isChatOpen = false;
         this.unreadCount = 0;
         this.chatMessages = [];
-        
-        // Reset UI state
         this.resetUIState();
     }
 
     clearComponentData() {
-        // Clear data yang tidak perlu dipertahankan
         this.speedHistory = [];
         this.distanceHistory = [];
         this.accuracyHistory = [];
         this.clearPersistentDistanceState();
-        
-        // Clear processing buffers
-        if (this.gpsProcessor) {
-            this.gpsProcessor.positionQueue = [];
-        }
-        
-        // ✅ CLEAR INFINITY CACHE
+        if (this.gpsProcessor) this.gpsProcessor.positionQueue = [];
         if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
-            navigator.serviceWorker.controller.postMessage({
-                type: 'LOGOUT_CLEANUP'
-            });
+            navigator.serviceWorker.controller.postMessage({ type: 'LOGOUT_CLEANUP' });
         }
     }
 
     resetUIState() {
-        // Reset semua UI elements ke state awal
         const resetElements = document.querySelectorAll('[data-reset-on-logout]');
-        resetElements.forEach(element => {
-            if (element.type === 'text' || element.type === 'password') {
-                element.value = '';
-            } else if (element.classList.contains('active')) {
-                element.classList.remove('active');
-            }
+        resetElements.forEach(el => {
+            if (el.type === 'text' || el.type === 'password') el.value = '';
+            else if (el.classList.contains('active')) el.classList.remove('active');
         });
-        
-        // Reset chat UI
         const chatMessages = document.getElementById('chatMessages');
-        if (chatMessages) {
-            chatMessages.innerHTML = '';
-        }
-        
-        // Reset logs
+        if (chatMessages) chatMessages.innerHTML = '';
         const systemLog = document.getElementById('systemLog');
-        if (systemLog) {
-            systemLog.innerHTML = '';
-        }
+        if (systemLog) systemLog.innerHTML = '';
     }
 
     getActiveTab() {
-        // Get currently active tab
         const activeTab = document.querySelector('.tab.active');
         return activeTab ? activeTab.id : null;
     }
 
     getScrollPositions() {
-        // Get scroll positions untuk nanti restore
         return {
             main: document.getElementById('mainContent')?.scrollTop || 0,
             chat: document.getElementById('chatMessages')?.scrollTop || 0,
@@ -9192,7 +10117,6 @@ class UnlimitedDTGPSLoggerWithLogout extends UnlimitedDTGPSLogger {
         };
     }
 
-    // Override method logout original
     logout() {
         this.initiateLogout();
     }
@@ -9201,12 +10125,10 @@ class UnlimitedDTGPSLoggerWithLogout extends UnlimitedDTGPSLogger {
         return this.logoutManager.getLogoutStatus();
     }
 
-    // ✅ NEW METHOD: Get Infinity Status untuk debugging
     getInfinityStatus() {
         return this.infinityManager ? this.infinityManager.getInfinityStats() : { error: 'Infinity manager not available' };
     }
 
-    // ✅ NEW METHOD: Force resume infinity tracking
     forceResumeInfinityTracking() {
         if (this.infinityManager) {
             this.infinityManager.enableInfinityMode();
@@ -9214,7 +10136,6 @@ class UnlimitedDTGPSLoggerWithLogout extends UnlimitedDTGPSLogger {
         }
     }
 
-    // ✅ NEW METHOD: Get comprehensive system status
     getEnhancedSystemStatus() {
         const baseStatus = super.getEnhancedSystemStatus();
         return {
@@ -9224,8 +10145,118 @@ class UnlimitedDTGPSLoggerWithLogout extends UnlimitedDTGPSLogger {
             logout: this.getLogoutStatus()
         };
     }
-}
 
+    // === CHAT SYSTEM IMPLEMENTATION ===
+    toggleChat = () => {
+        this.isChatOpen = !this.isChatOpen;
+        const chatPanel = document.getElementById('chatPanel');
+        if (chatPanel) {
+            if (this.isChatOpen) {
+                chatPanel.classList.remove('hidden');
+                this.initializeChat();
+                this.loadChatMessages();
+            } else {
+                chatPanel.classList.add('hidden');
+            }
+        }
+    }
+
+    initializeChat = () => {
+        if (this.chatInitialized || !this.chatRef) return;
+        this.chatRef.on('child_added', (snapshot) => {
+            const message = snapshot.val();
+            this.displayChatMessage(message);
+        });
+        this.chatInitialized = true;
+        console.log('💬 Chat system initialized for unit:', this.driverData?.unit);
+    }
+
+    displayChatMessage = (message) => {
+        const chatMessages = document.getElementById('chatMessages');
+        if (!chatMessages) return;
+        const messageElement = document.createElement('div');
+        messageElement.className = `chat-message ${message.sender === 'system' ? 'system-message' : 'user-message'}`;
+        messageElement.innerHTML = `
+            <div class="message-sender">${message.sender || 'Driver'}</div>
+            <div class="message-text">${this.escapeHtml(message.text)}</div>
+            <div class="message-time">${new Date(message.timestamp).toLocaleTimeString('id-ID')}</div>
+        `;
+        chatMessages.appendChild(messageElement);
+        chatMessages.scrollTop = chatMessages.scrollHeight;
+        if (!this.isChatOpen && message.type !== 'driver') {
+            this.unreadCount++;
+            this.updateChatBadge();
+        }
+    }
+
+    updateChatBadge = () => {
+        const chatBadge = document.getElementById('chatBadge');
+        if (chatBadge) {
+            chatBadge.textContent = this.unreadCount > 0 ? this.unreadCount.toString() : '';
+            chatBadge.style.display = this.unreadCount > 0 ? 'block' : 'none';
+        }
+    }
+
+    sendChatMessage = async () => {
+        const chatInput = document.getElementById('chatInput');
+        if (!chatInput?.value.trim() || !this.chatRef) return;
+
+        const messageText = chatInput.value.trim();
+        const messageId = 'msg_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+        const message = {
+            id: messageId,
+            text: messageText,
+            sender: this.driverData?.name || 'Driver',
+            unit: this.driverData?.unit,
+            timestamp: new Date().toISOString(),
+            timeDisplay: new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }),
+            type: 'driver',
+            synced: true
+        };
+
+        try {
+            this.displayChatMessage(message);
+            this.chatMessages.push(message);
+            chatInput.value = '';
+            await this.chatRef.push(message);
+        } catch (error) {
+            console.error('❌ Gagal kirim pesan:', error);
+            this.addLog('Gagal mengirim pesan chat', 'error');
+        }
+    }
+
+    loadChatMessages = () => {
+        this.unreadCount = 0;
+        this.updateChatBadge();
+    }
+
+    escapeHtml = (text) => {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
+    setupChatHandlers = () => {
+        const chatToggle = document.getElementById('chatToggle');
+        if (chatToggle) chatToggle.addEventListener('click', () => this.toggleChat());
+        const sendButton = document.getElementById('sendChatButton');
+        if (sendButton) sendButton.addEventListener('click', () => this.sendChatMessage());
+        const chatInput = document.getElementById('chatInput');
+        if (chatInput) {
+            chatInput.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') this.sendChatMessage();
+            });
+        }
+    }
+
+    updateDriverData = (driverData) => {
+        this.driverData = driverData;
+        if (driverData?.unit) {
+            this.chatRef = database.ref(`/chat/${driverData.unit}`);
+            console.log(`💬 Chat ref set for unit: ${driverData.unit}`);
+        }
+    }
+}
 class EnhancedDuplicateDetector {
     constructor() {
         this.positionHistory = new Map();
