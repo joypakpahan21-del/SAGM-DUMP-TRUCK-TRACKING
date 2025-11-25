@@ -113,7 +113,7 @@ class AdvancedSAGMGpsTracking {
                 airFilterChange: 5000,
                 brakeService: 8000,
                 majorService: 10000
-            }
+            }   
         };
         this.importantLocations = {
             PKS_SAGM: { 
@@ -131,40 +131,40 @@ class AdvancedSAGMGpsTracking {
                 radius: 300
             },
             Afdeling_1: {
-                lat: -0.39846575920901245,
-                lng: 102.91875899322632,
-                name: "Kantor Afdeling 1",
-                type: "afdeling_office",
-                radius: 150
-            },
-            Afdeling_2: {
-                lat: -0.39846575920901245,
-                lng: 102.91875899322632,
-                name: "Kantor Afdeling 2",
-                type: "afdeling_office",
-                radius: 150
-            },
-            Afdeling_3: {
-                lat: -0.39846575920901245,
-                lng: 102.91875899322632,
-                name: "Kantor Afdeling 3",
-                type: "afdeling_office",
-                radius: 150
-            },
-            Afdeling_4: {
-                lat: -0.33507085388562874,
-                lng: 102.94759502462418,
-                name: "Kantor Afdeling 4",
-                type: "afdeling_office",
-                radius: 150
-            },
-            Afdeling_5: {
-                lat: -0.30536091092084,
-                lng: 102.95738150638326,
-                name: "Kantor Afdeling 5",
-                type: "afdeling_office",
-                radius: 150
-            }
+        lat: -0.3984773214165855,
+        lng: 102.91875036695578,
+        name: "Kantor Afdeling 1",
+        type: "afdeling_office",
+        radius: 150
+    },
+    Afdeling_2: {
+        lat: -0.3894919960706564,
+        lng: 102.93819088929065,
+        name: "Kantor Afdeling 2",
+        type: "afdeling_office",
+        radius: 150
+    },
+    Afdeling_3: {
+        lat: -0.35891411851916827,
+        lng: 102.95544678239833,
+        name: "Kantor Afdeling 3",
+        type: "afdeling_office",
+        radius: 150
+    },
+    Afdeling_4: {
+        lat: -0.3357919035353224,
+        lng: 102.94762208170145,
+        name: "Kantor Afdeling 4",
+        type: "afdeling_office",
+        radius: 150
+    },
+    Afdeling_5: {
+        lat: -0.3054707525558214,
+        lng: 102.9573562242544,
+        name: "Kantor Afdeling 5",
+        type: "afdeling_office",
+        radius: 150
+    }
         };
         this.config = {
             center: [
@@ -181,7 +181,6 @@ class AdvancedSAGMGpsTracking {
             console.log('🚀 Starting Advanced GPS Tracking System with Complete Analytics...');
             this.setupMap();
             this.setupEventHandlers();
-            // ❌ HAPUS: this.setupChatHandlers(); ← KARENA INI UNTUK CHAT LEGACY
             this.connectToFirebase();
             this.startPeriodicTasks();
             this.setupDataLogger();
@@ -219,65 +218,99 @@ class AdvancedSAGMGpsTracking {
         }
     }
 
-    // ===== SEMUA METHOD CHAT MONITOR (TANPA LEGACY) =====
     handleMonitorChatMessage(unitName, message) {
-        if (!message || !message.text) return;
-        if (message.type === 'monitor') return; // Skip own messages
-        if (!this.monitorChatMessages.has(unitName)) {
-            this.monitorChatMessages.set(unitName, []);
-        }
-        const messages = this.monitorChatMessages.get(unitName);
-        const messageExists = messages.some(msg => msg.id === message.id);
-        if (messageExists) return;
-        messages.push(message);
-        if (this.activeChatUnit !== unitName) {
-            const currentCount = this.monitorUnreadCounts.get(unitName) || 0;
-            this.monitorUnreadCounts.set(unitName, currentCount + 1);
-        }
-        this.updateMonitorChatUI();
-        this.updateMonitorChatUnitSelect();
-        if (this.activeChatUnit !== unitName) {
-            this.showMonitorChatNotification(unitName, message);
-        }
+    if (!message || !message.text) return;
+    
+    // ✅ PERBAIKAN: Hanya proses pesan yang BUKAN dari monitor
+    if (message.type === 'monitor') return;
+    
+    if (!this.monitorChatMessages.has(unitName)) {
+        this.monitorChatMessages.set(unitName, []);
     }
+    
+    const messages = this.monitorChatMessages.get(unitName);
+    const messageExists = messages.some(msg => msg.id === message.id);
+    
+    if (messageExists) return;
+    
+    messages.push(message);
+    
+    // Update unread count
+    if (this.activeChatUnit !== unitName) {
+        const currentCount = this.monitorUnreadCounts.get(unitName) || 0;
+        this.monitorUnreadCounts.set(unitName, currentCount + 1);
+    }
+    
+    this.updateMonitorChatUI();
+    this.updateMonitorChatUnitSelect();
+    
+    if (this.activeChatUnit !== unitName) {
+        this.showMonitorChatNotification(unitName, message);
+    }
+}
 
     async sendMonitorMessage() {
-        const messageInput = document.getElementById('monitorChatInput');
-        const messageText = messageInput?.value.trim();
-        if (!messageText || !this.activeChatUnit) {
-            alert('Pilih unit dan ketik pesan terlebih dahulu!');
-            return;
-        }
-        if (!this.monitorChatRefs.has(this.activeChatUnit)) {
-            alert(`Tidak dapat terhubung dengan ${this.activeChatUnit}`);
-            return;
-        }
-        const messageId = 'msg_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
-        const messageData = {
-            id: messageId,
-            text: messageText,
-            sender: 'MONITOR',
-            unit: this.activeChatUnit,
-            timestamp: new Date().toISOString(),
-            timeDisplay: new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }),
-            type: 'monitor',
-            status: 'sent'
-        };
-        try {
-            const chatRef = this.monitorChatRefs.get(this.activeChatUnit);
-            await chatRef.push(messageData);
-            if (!this.monitorChatMessages.has(this.activeChatUnit)) {
-                this.monitorChatMessages.set(this.activeChatUnit, []);
-            }
-            this.monitorChatMessages.get(this.activeChatUnit).push(messageData);
-            this.updateMonitorChatUI();
-            if (messageInput) messageInput.value = '';
-            this.stopMonitorTyping();
-        } catch (error) {
-            console.error('Gagal mengirim pesan:', error);
-            alert('Gagal mengirim pesan. Coba lagi.');
-        }
+    const messageInput = document.getElementById('monitorChatInput');
+    const messageText = messageInput?.value.trim();
+    
+    console.log('📤 Attempting to send message:', messageText);
+    
+    if (!messageText) {
+        alert('⚠️ Silakan ketik pesan terlebih dahulu!');
+        return;
     }
+    
+    if (!this.activeChatUnit) {
+        alert('⚠️ Pilih unit terlebih dahulu!');
+        return;
+    }
+    
+    if (!this.monitorChatRefs.has(this.activeChatUnit)) {
+        alert(`❌ Tidak dapat terhubung dengan ${this.activeChatUnit}`);
+        return;
+    }
+    
+    const messageId = 'msg_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+    const messageData = {
+        id: messageId,
+        text: messageText,
+        sender: 'MONITOR',
+        unit: this.activeChatUnit,
+        timestamp: new Date().toISOString(),
+        timeDisplay: new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }),
+        type: 'monitor',
+        status: 'sent'
+    };
+    
+    try {
+        console.log('📝 Sending message to Firebase:', messageData);
+        const chatRef = this.monitorChatRefs.get(this.activeChatUnit);
+        await chatRef.push(messageData);
+        
+        // Tambahkan ke local messages
+        if (!this.monitorChatMessages.has(this.activeChatUnit)) {
+            this.monitorChatMessages.set(this.activeChatUnit, []);
+        }
+        this.monitorChatMessages.get(this.activeChatUnit).push(messageData);
+        
+        // Update UI
+        this.updateMonitorChatUI();
+        
+        // Clear input
+        if (messageInput) {
+            messageInput.value = '';
+        }
+        
+        // Stop typing indicator
+        this.stopMonitorTyping();
+        
+        console.log('✅ Message sent successfully');
+        
+    } catch (error) {
+        console.error('❌ Gagal mengirim pesan:', error);
+        alert('❌ Gagal mengirim pesan. Coba lagi.');
+    }
+}
 
     setupUnitChatListener(unitName) {
         if (this.monitorChatRefs.has(unitName)) return;
@@ -441,63 +474,107 @@ class AdvancedSAGMGpsTracking {
     }
 
     setupChatEventHandlers() {
-        const chatInput = document.getElementById('monitorChatInput');
-        const unitSelect = document.getElementById('monitorChatUnitSelect');
-        if (chatInput) {
-            chatInput.addEventListener('keypress', (e) => {
-                if (e.key === 'Enter') {
-                    e.preventDefault();
-                    this.sendMonitorMessage();
-                }
-            });
-        }
-        if (unitSelect) {
-            unitSelect.addEventListener('change', (e) => {
-                this.selectChatUnit(e.target.value);
-            });
-        }
+    const chatInput = document.getElementById('monitorChatInput');
+    const unitSelect = document.getElementById('monitorChatUnitSelect');
+    const sendBtn = document.getElementById('monitorSendBtn');
+    
+    console.log('🔧 Setting up chat event handlers...');
+    
+    if (chatInput) {
+        chatInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                console.log('📤 Enter pressed - sending message');
+                this.sendMonitorMessage();
+            }
+        });
+        
+        // Tambahkan input event untuk typing indicator
+        chatInput.addEventListener('input', (e) => {
+            if (this.activeChatUnit) {
+                this.startMonitorTyping();
+            }
+        });
     }
+    
+    if (unitSelect) {
+        unitSelect.addEventListener('change', (e) => {
+            console.log('👤 Selected chat unit:', e.target.value);
+            this.selectChatUnit(e.target.value);
+        });
+    }
+    
+    if (sendBtn) {
+        sendBtn.addEventListener('click', (e) => {
+            console.log('📤 Send button clicked');
+            this.sendMonitorMessage();
+        });
+    }
+    
+    console.log('✅ Chat event handlers setup completed');
+}
 
     toggleMonitorChat() {
-        this.isMonitorChatOpen = !this.isMonitorChatOpen;
-        const chatWindow = document.getElementById('monitorChatWindow');
-        const chatToggle = document.getElementById('monitorChatToggle');
-        if (!chatWindow) return;
-        if (this.isMonitorChatOpen) {
-            this.cleanupChatEventListeners();
-            this.setupChatEventListeners();
-            chatWindow.style.display = 'flex';
-            chatWindow.style.animation = 'slideInUp 0.3s ease-out forwards';
-            this.updateMonitorChatUnitSelect();
-            this.updateMonitorChatUI();
-            if (this.activeChatUnit) {
-                setTimeout(() => {
-                    const chatInput = document.getElementById('monitorChatInput');
-                    if (chatInput) chatInput.focus();
-                }, 350);
-            }
-            if (chatToggle) {
-                chatToggle.innerHTML = '💬 Tutup Chat <span id="monitorUnreadBadge" class="badge bg-danger" style="display: none;"></span>';
-                chatToggle.classList.add('btn-secondary');
-                chatToggle.classList.remove('btn-primary');
-            }
-        } else {
-            chatWindow.style.animation = 'slideOutDown 0.25s ease-in forwards';
-            this.stopMonitorTyping();
-            if (chatToggle) {
-                chatToggle.innerHTML = '💬 Chat dengan Driver <span id="monitorUnreadBadge" class="badge bg-danger" style="display: none;"></span>';
-                chatToggle.classList.add('btn-primary');
-                chatToggle.classList.remove('btn-secondary');
-            }
-            setTimeout(() => {
-                if (!this.isMonitorChatOpen) {
-                    chatWindow.style.display = 'none';
-                    chatWindow.style.animation = '';
-                }
-            }, 250);
-            this.cleanupChatEventListeners();
-        }
+    this.isMonitorChatOpen = !this.isMonitorChatOpen;
+    const chatWindow = document.getElementById('monitorChatWindow');
+    const chatToggle = document.getElementById('monitorChatToggle');
+    
+    console.log('💬 Toggle chat:', this.isMonitorChatOpen);
+    
+    if (!chatWindow) {
+        console.error('❌ Chat window element not found!');
+        return;
     }
+    
+    if (this.isMonitorChatOpen) {
+        // Buka chat
+        chatWindow.style.display = 'flex';
+        chatWindow.style.animation = 'slideInUp 0.3s ease-out forwards';
+        
+        // Setup event listeners
+        this.setupChatEventHandlers();
+        
+        // Update UI
+        this.updateMonitorChatUnitSelect();
+        this.updateMonitorChatUI();
+        
+        // Focus input jika ada unit aktif
+        if (this.activeChatUnit) {
+            setTimeout(() => {
+                const chatInput = document.getElementById('monitorChatInput');
+                if (chatInput) {
+                    chatInput.focus();
+                    console.log('🎯 Focused chat input for:', this.activeChatUnit);
+                }
+            }, 350);
+        }
+        
+        // Update toggle button
+        if (chatToggle) {
+            chatToggle.innerHTML = '💬 Tutup Chat <span id="monitorUnreadBadge" class="badge bg-danger" style="display: none;"></span>';
+            chatToggle.classList.add('btn-secondary');
+            chatToggle.classList.remove('btn-primary');
+        }
+    } else {
+        // Tutup chat
+        chatWindow.style.animation = 'slideOutDown 0.25s ease-in forwards';
+        this.stopMonitorTyping();
+        
+        // Update toggle button
+        if (chatToggle) {
+            chatToggle.innerHTML = '💬 Chat dengan Driver <span id="monitorUnreadBadge" class="badge bg-danger" style="display: none;"></span>';
+            chatToggle.classList.add('btn-primary');
+            chatToggle.classList.remove('btn-secondary');
+        }
+        
+        setTimeout(() => {
+            if (!this.isMonitorChatOpen) {
+                chatWindow.style.display = 'none';
+                chatWindow.style.animation = '';
+            }
+        }, 250);
+    }
+}
 
     setupChatEventListeners() {
         const chatWindow = document.getElementById('monitorChatWindow');
