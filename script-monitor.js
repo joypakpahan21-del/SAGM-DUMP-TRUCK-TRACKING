@@ -472,6 +472,63 @@ class AdvancedSAGMGpsTracking {
         this.monitorChatInitialized = true;
         console.log('✅ Monitor chat system initialized');
     }
+    setupChatWindowBehavior() {
+    console.log('💬 Setting up chat window behavior...');
+    try {
+        // Basic chat window behavior
+        this.setupBasicChatBehavior();
+        console.log('✅ Chat window behavior setup completed');
+    } catch (error) {
+        console.warn('⚠️ Chat window behavior setup failed:', error);
+    }
+}
+
+setupBasicChatBehavior() {
+    // Simple auto-hide functionality
+    this.setupChatAutoHide();
+    // Click outside to close
+    this.setupClickOutsideToClose();
+    // Escape key to close
+    this.setupEscapeKeyClose();
+}
+
+setupChatAutoHide() {
+    // Auto-hide chat setelah 10 menit tidak aktif
+    let chatTimeout;
+    const resetTimer = () => {
+        clearTimeout(chatTimeout);
+        if (this.isMonitorChatOpen) {
+            chatTimeout = setTimeout(() => {
+                if (this.isMonitorChatOpen) {
+                    this.toggleMonitorChat();
+                    console.log('💬 Chat auto-hidden due to inactivity');
+                }
+            }, 600000); // 10 menit
+        }
+    };
+    const chatInput = document.getElementById('monitorChatInput');
+    const chatWindow = document.getElementById('monitorChatWindow');
+    if (chatInput) {
+        chatInput.addEventListener('input', resetTimer);
+        chatInput.addEventListener('focus', resetTimer);
+    }
+    if (chatWindow) {
+        chatWindow.addEventListener('mousemove', resetTimer);
+        chatWindow.addEventListener('click', resetTimer);
+    }
+}
+
+setupClickOutsideToClose() {
+    // Akan ditangani di toggleMonitorChat via event listeners
+}
+
+setupEscapeKeyClose() {
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && this.isMonitorChatOpen) {
+            this.toggleMonitorChat();
+        }
+    });
+}
 
     setupChatEventHandlers() {
     const chatInput = document.getElementById('monitorChatInput');
@@ -4274,4 +4331,3 @@ function sendChatMessage() {
         window.gpsSystem.sendChatMessage();
     }
 }
-        
