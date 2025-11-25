@@ -2796,21 +2796,42 @@ class AnalyticsEngine {
     }
 
     setupMaintenanceChart() {
-        const ctx = document.getElementById('maintenanceChart')?.getContext('2d');
-        if (!ctx) return;
+    const ctx = document.getElementById('maintenanceChart')?.getContext('2d');
+    if (!ctx) return;
 
-        this.charts.set('maintenance', new Chart(ctx, {
-            type: 'bar',
-            data: {
-                labels: ['Oil Change', 'Tire Rotation', 'Brake Service', 'Major Service'],
-                datasets: [{
-                    label: 'KM Tersisa',
-                    data: [5000, 10000, 15000, 20000],
-                    backgroundColor: ['#28a745', '#20c997', '#ffc107', '#fd7e14']
-                }]
+    this.charts.set('maintenance', new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels: [
+                'Oli Mesin', 
+                'Oli Persneling', 
+                'Oli Gardan', 
+                'Filter Solar & Oli',
+                'Filter Udara',
+                'Service Rem',
+                'Service Besar'
+            ],
+            datasets: [{
+                label: 'KM Tersisa',
+                data: [2500, 10000, 10000, 2500, 5000, 8000, 10000],
+                backgroundColor: [
+                    '#28a745', '#20c997', '#17a2b8', '#ffc107', 
+                    '#fd7e14', '#dc3545', '#6f42c1'
+                ]
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                title: {
+                    display: true,
+                    text: 'Jadwal Maintenance Kendaraan'
+                }
             }
-        }));
-    }
+        }
+    }));
+}
 
     setupZonesChart() {
         const ctx = document.getElementById('zonesChart')?.getContext('2d');
@@ -3798,14 +3819,30 @@ class MaintenancePredictor {
         });
     }
 
-    initializeUnit(unit) {
-        this.maintenanceSchedule.set(unit.name, {
-            oilChange: this.calculateNextMaintenance(unit.distance, this.main.vehicleConfig.maintenanceIntervals.oilChange),
-            tireRotation: this.calculateNextMaintenance(unit.distance, this.main.vehicleConfig.maintenanceIntervals.tireRotation),
-            brakeService: this.calculateNextMaintenance(unit.distance, this.main.vehicleConfig.maintenanceIntervals.brakeService),
-            majorService: this.calculateNextMaintenance(unit.distance, this.main.vehicleConfig.maintenanceIntervals.majorService)
-        });
-    }
+   initializeUnit(unit) {
+    this.maintenanceSchedule.set(unit.name, {
+        oilChange: this.calculateNextMaintenance(unit.distance, this.main.vehicleConfig.maintenanceIntervals.oilChange),
+        gearOilChange: this.calculateNextMaintenance(unit.distance, this.main.vehicleConfig.maintenanceIntervals.gearOilChange),
+        differentialOilChange: this.calculateNextMaintenance(unit.distance, this.main.vehicleConfig.maintenanceIntervals.differentialOilChange),
+        fuelAndOilFilterChange: this.calculateNextMaintenance(unit.distance, this.main.vehicleConfig.maintenanceIntervals.fuelAndOilFilterChange),
+        airFilterChange: this.calculateNextMaintenance(unit.distance, this.main.vehicleConfig.maintenanceIntervals.airFilterChange),
+        brakeService: this.calculateNextMaintenance(unit.distance, this.main.vehicleConfig.maintenanceIntervals.brakeService),
+        majorService: this.calculateNextMaintenance(unit.distance, this.main.vehicleConfig.maintenanceIntervals.majorService)
+    });
+}
+
+getServiceInterval(service) {
+    const intervals = {
+        'oilChange': this.main.vehicleConfig.maintenanceIntervals.oilChange,
+        'gearOilChange': this.main.vehicleConfig.maintenanceIntervals.gearOilChange,
+        'differentialOilChange': this.main.vehicleConfig.maintenanceIntervals.differentialOilChange,
+        'fuelAndOilFilterChange': this.main.vehicleConfig.maintenanceIntervals.fuelAndOilFilterChange,
+        'airFilterChange': this.main.vehicleConfig.maintenanceIntervals.airFilterChange,
+        'brakeService': this.main.vehicleConfig.maintenanceIntervals.brakeService,
+        'majorService': this.main.vehicleConfig.maintenanceIntervals.majorService
+    };
+    return intervals[service] || 10000;
+}
 
     calculateNextMaintenance(currentDistance, interval) {
         const nextService = Math.ceil(currentDistance / interval) * interval;
