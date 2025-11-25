@@ -4,25 +4,19 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>First Resources - Real-time GPS Tracking</title>
-    
     <!-- Meta Tags -->
     <meta name="description" content="Sistem Monitoring Real-time 23 Unit Canter PS125 - Kebun Tempuling">
     <meta name="keywords" content="gps tracking, first resources, kebun tempuling, canter ps125, real-time">
     <link rel="icon" type="image/x-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🚛</text></svg>">
-    
     <!-- Leaflet CSS -->
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-    
     <!-- Bootstrap CSS -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    
     <!-- Firebase SDK -->
     <script src="https://www.gstatic.com/firebasejs/9.6.0/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.6.0/firebase-database-compat.js"></script>
-    
     <!-- External CSS -->
     <link href="style-monitor.css" rel="stylesheet">
-    
     <!-- Enhanced Chat CSS -->
     <style>
         /* CHAT WINDOW POSITION FIX */
@@ -32,7 +26,6 @@
             left: 0;
             z-index: 1000;
         }
-        
         .chat-toggle-btn {
             position: fixed !important;
             bottom: 20px;
@@ -43,12 +36,10 @@
             padding: 10px 20px;
             transition: all 0.3s ease;
         }
-        
         .chat-toggle-btn:hover {
             transform: translateY(-2px);
             box-shadow: 0 6px 16px rgba(0,0,0,0.4);
         }
-        
         .chat-window {
             position: fixed;
             bottom: 70px;
@@ -66,31 +57,26 @@
             flex-direction: column;
             overflow: hidden;
         }
-        
         .chat-header {
             background: linear-gradient(135deg, #198754, #20c997);
             color: white;
             padding: 12px 15px;
             border-bottom: 1px solid #ddd;
         }
-        
         .chat-header h6 {
             font-weight: 600;
         }
-        
         .chat-messages {
             flex: 1;
             overflow-y: auto;
             padding: 15px;
             background: #f8f9fa;
         }
-        
         .chat-input-container {
             padding: 15px;
             border-top: 1px solid #eee;
             background: white;
         }
-
         /* Chat Message Styles */
         .chat-message {
             margin-bottom: 10px;
@@ -99,58 +85,49 @@
             max-width: 80%;
             word-wrap: break-word;
         }
-        
         .message-sent {
             background: #007bff;
             color: white;
             margin-left: auto;
             border-bottom-right-radius: 4px;
         }
-        
         .message-received {
             background: #e9ecef;
             color: #333;
             margin-right: auto;
             border-bottom-left-radius: 4px;
         }
-        
         .message-time {
             font-size: 11px;
             opacity: 0.7;
             margin-top: 4px;
         }
-
         .message-sender {
             font-size: 12px;
             font-weight: bold;
             margin-bottom: 4px;
         }
-
         .message-status {
             font-size: 10px;
             margin-left: 5px;
         }
-
         .message-footer {
             display: flex;
             justify-content: space-between;
             align-items: center;
             margin-top: 4px;
         }
-
         .chat-date-separator {
             text-align: center;
             margin: 10px 0;
             position: relative;
         }
-
         .chat-date-separator span {
             background: #f8f9fa;
             padding: 0 10px;
             color: #6c757d;
             font-size: 12px;
         }
-
         .chat-date-separator:before {
             content: "";
             position: absolute;
@@ -161,7 +138,6 @@
             background: #dee2e6;
             z-index: -1;
         }
-
         .typing-indicator {
             display: flex;
             align-items: center;
@@ -169,12 +145,10 @@
             font-size: 12px;
             padding: 5px 10px;
         }
-
         .typing-dots {
             display: flex;
             margin-left: 8px;
         }
-
         .typing-dot {
             width: 6px;
             height: 6px;
@@ -183,15 +157,12 @@
             margin: 0 1px;
             animation: typingAnimation 1.4s infinite ease-in-out;
         }
-
         .typing-dot:nth-child(1) { animation-delay: -0.32s; }
         .typing-dot:nth-child(2) { animation-delay: -0.16s; }
-
         @keyframes typingAnimation {
             0%, 80%, 100% { transform: scale(0.8); opacity: 0.5; }
             40% { transform: scale(1); opacity: 1; }
         }
-
         /* Chat Animations */
         @keyframes slideInUp {
             from {
@@ -203,7 +174,6 @@
                 transform: translateY(0);
             }
         }
-
         @keyframes slideOutDown {
             from {
                 opacity: 1;
@@ -214,18 +184,6 @@
                 transform: translateY(20px);
             }
         }
-
-        @keyframes slideInRight {
-            from {
-                opacity: 0;
-                transform: translateX(100%);
-            }
-            to {
-                opacity: 1;
-                transform: translateX(0);
-            }
-        }
-        
         .chat-placeholder {
             display: flex;
             align-items: center;
@@ -233,7 +191,6 @@
             height: 100%;
             color: #6c757d;
         }
-
         /* Responsive Design for Mobile */
         @media (max-width: 768px) {
             .chat-toggle-btn {
@@ -243,7 +200,6 @@
                 padding: 8px 16px;
                 font-size: 14px;
             }
-            
             .chat-window {
                 left: 10px !important;
                 right: 10px !important;
@@ -253,8 +209,6 @@
                 height: 60vh;
             }
         }
-        
-        /* Untuk layar sangat kecil */
         @media (max-width: 480px) {
             .chat-window {
                 left: 5px !important;
@@ -262,7 +216,6 @@
                 bottom: 55px;
                 height: 55vh;
             }
-            
             .chat-toggle-btn {
                 left: 5px !important;
                 bottom: 10px;
@@ -270,38 +223,30 @@
                 padding: 6px 12px;
             }
         }
-        
         /* Pastikan tidak overlap dengan sidebar */
         @media (min-width: 769px) {
             .sidebar-open .chat-window {
                 left: calc(25% + 20px) !important;
             }
         }
-
-        /* Loading and System Styles */
+        /* Other global styles */
         #loadingSpinner {
             z-index: 9999;
         }
-
         .debug-panel {
             z-index: 9998;
         }
-
         .chat-notification {
             z-index: 9997;
         }
-
-        /* Connection Status Styles */
         .connection-online {
             color: #198754 !important;
             font-weight: bold;
         }
-
         .connection-offline {
             color: #dc3545 !important;
             font-weight: bold;
         }
-
         .real-time-indicator {
             display: inline-block;
             width: 8px;
@@ -311,155 +256,10 @@
             margin-right: 5px;
             animation: pulse 2s infinite;
         }
-
         @keyframes pulse {
             0% { transform: scale(0.95); opacity: 0.7; }
             50% { transform: scale(1.1); opacity: 1; }
             100% { transform: scale(0.95); opacity: 0.7; }
-        }
-
-        /* NEW CHAT INTERFACE STYLES */
-        .chat-toggle {
-            position: fixed;
-            bottom: 20px;
-            right: 20px;
-            width: 60px;
-            height: 60px;
-            border-radius: 50%;
-            background: linear-gradient(135deg, #007bff, #0056b3);
-            border: none;
-            color: white;
-            font-size: 24px;
-            cursor: pointer;
-            box-shadow: 0 4px 15px rgba(0, 123, 255, 0.4);
-            z-index: 1000;
-            transition: all 0.3s ease;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-
-        .chat-toggle:hover {
-            transform: scale(1.1);
-            box-shadow: 0 6px 20px rgba(0, 123, 255, 0.6);
-        }
-
-        .chat-badge {
-            position: absolute;
-            top: -5px;
-            right: -5px;
-            background: #dc3545;
-            color: white;
-            border-radius: 50%;
-            width: 20px;
-            height: 20px;
-            font-size: 12px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-weight: bold;
-        }
-
-        .chat-panel {
-            position: fixed;
-            bottom: 90px;
-            right: 20px;
-            width: 350px;
-            height: 500px;
-            background: white;
-            border-radius: 12px;
-            box-shadow: 0 8px 30px rgba(0, 0, 0, 0.2);
-            z-index: 1000;
-            display: flex;
-            flex-direction: column;
-            overflow: hidden;
-            border: 1px solid #ddd;
-        }
-
-        .chat-panel.hidden {
-            display: none;
-        }
-
-        .chat-panel .chat-header {
-            background: linear-gradient(135deg, #007bff, #0056b3);
-            color: white;
-            padding: 15px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            border-bottom: 1px solid #ddd;
-        }
-
-        .chat-panel .chat-header h6 {
-            margin: 0;
-            font-weight: 600;
-        }
-
-        .chat-panel .chat-messages {
-            flex: 1;
-            overflow-y: auto;
-            padding: 15px;
-            background: #f8f9fa;
-        }
-
-        .chat-panel .chat-input-container {
-            padding: 15px;
-            border-top: 1px solid #eee;
-            background: white;
-        }
-
-        .chat-input {
-            border-radius: 20px;
-            padding: 10px 15px;
-            border: 1px solid #ddd;
-        }
-
-        /* Responsive Design for New Chat */
-        @media (max-width: 768px) {
-            .chat-panel {
-                width: 300px;
-                height: 400px;
-                right: 10px;
-                bottom: 80px;
-            }
-            
-            .chat-toggle {
-                bottom: 15px;
-                right: 15px;
-                width: 50px;
-                height: 50px;
-                font-size: 20px;
-            }
-        }
-
-        @media (max-width: 480px) {
-            .chat-panel {
-                width: calc(100vw - 40px);
-                height: 50vh;
-                right: 20px;
-                left: 20px;
-                bottom: 70px;
-            }
-            
-            .chat-toggle {
-                bottom: 10px;
-                right: 10px;
-            }
-        }
-
-        /* Chat Status Indicators */
-        .chat-status-online {
-            color: #28a745;
-            font-size: 10px;
-        }
-
-        .chat-status-offline {
-            color: #dc3545;
-            font-size: 10px;
-        }
-
-        .chat-unit-select {
-            max-width: 200px;
         }
     </style>
 </head>
@@ -488,7 +288,6 @@
             </div>
         </div>
     </nav>
-
     <div class="container-fluid">
         <div class="row">
             <!-- Sidebar - Unit List -->
@@ -503,16 +302,13 @@
                             <i>📡</i> <span id="dataCount">0</span> Data Points
                         </div>
                     </div>
-
                     <h4 class="text-success mb-3">
                         <i>📊</i> Daftar Unit Canter
                         <small class="d-block text-muted fs-6">Real-time dari Driver Mobile</small>
                     </h4>
-                    
                     <div class="mb-3">
                         <input type="text" id="searchUnit" class="form-control" placeholder="🔍 Cari unit/driver...">
                     </div>
-                    
                     <div class="row g-2 mb-3">
                         <div class="col-6">
                             <select id="filterAfdeling" class="form-select">
@@ -534,16 +330,14 @@
                             </select>
                         </div>
                     </div>
-
                     <div class="mb-3">
                         <select id="filterFuel" class="form-select">
                             <option value="">⛽ Semua Level Bahan Bakar</option>
-                            <option value="high">🟢 Tinggi (&gt;70%)</option>
+                            <option value="high">🟢 Tinggi (>70%)</option>
                             <option value="medium">🟡 Sedang (30-70%)</option>
-                            <option value="low">🔴 Rendah (&lt;30%)</option>
+                            <option value="low">🔴 Rendah (<30%)</option>
                         </select>
                     </div>
-
                     <div id="unitList" class="unit-list">
                         <div class="text-center text-muted py-4">
                             <div class="spinner-border spinner-border-sm text-success me-2"></div>
@@ -552,7 +346,6 @@
                     </div>
                 </div>
             </div>
-
             <!-- Main Content - Map -->
             <div class="col-md-9">
                 <!-- Statistics Cards -->
@@ -606,7 +399,6 @@
                         </div>
                     </div>
                 </div>
-
                 <!-- Map Container -->
                 <div class="card">
                     <div class="card-header bg-light d-flex justify-content-between align-items-center">
@@ -641,7 +433,6 @@
                         </div>
                     </div>
                 </div>
-
                 <!-- Legenda -->
                 <div class="card mt-3">
                     <div class="card-header bg-light">
@@ -681,7 +472,7 @@
                                 <h6 class="legend-title">Level Bahan Bakar</h6>
                                 <div class="d-flex align-items-center mb-2">
                                     <div class="legend-color bg-success me-2"></div>
-                                    <small>🟢 Tinggi (&gt;70%)</small>
+                                    <small>🟢 Tinggi (>70%)</small>
                                 </div>
                                 <div class="d-flex align-items-center mb-2">
                                     <div class="legend-color bg-warning me-2"></div>
@@ -689,7 +480,7 @@
                                 </div>
                                 <div class="d-flex align-items-center mb-2">
                                     <div class="legend-color bg-danger me-2"></div>
-                                    <small>🔴 Rendah (&lt;30%)</small>
+                                    <small>🔴 Rendah (<30%)</small>
                                 </div>
                             </div>
                             <div class="col-md-3">
@@ -712,7 +503,6 @@
                         </div>
                     </div>
                 </div>
-
                 <!-- Data Logger Section -->
                 <div class="card mt-3">
                     <div class="card-header bg-light">
@@ -733,14 +523,11 @@
         </div>
     </div>
 
-    <!-- ✅ ENHANCED CHAT INTERFACE - POSITION FIXED & RESPONSIVE -->
+    <!-- ✅ ENHANCED CHAT INTERFACE - BERSIH & HANYA SATU SISTEM -->
     <div id="monitorChatContainer">
-        <!-- Chat Toggle Button -->
         <button id="monitorChatToggle" class="btn btn-primary chat-toggle-btn">
             💬 Chat dengan Driver <span id="monitorUnreadBadge" class="badge bg-danger" style="display: none;"></span>
         </button>
-        
-        <!-- Chat Window - FIXED POSITION & RESPONSIVE -->
         <div id="monitorChatWindow" class="chat-window">
             <div class="chat-header">
                 <h6 class="mb-0">💬 Chat dengan Driver</h6>
@@ -751,13 +538,11 @@
                     <button type="button" class="btn-close btn-close-white" onclick="toggleMonitorChat()"></button>
                 </div>
             </div>
-            
             <div id="monitorChatMessages" class="chat-messages">
                 <div class="chat-placeholder text-center text-muted py-4">
                     <small>Pilih unit untuk memulai percakapan...</small>
                 </div>
             </div>
-            
             <div class="chat-input-container">
                 <div class="input-group">
                     <input type="text" id="monitorChatInput" class="form-control" 
@@ -773,46 +558,6 @@
         </div>
     </div>
 
-    <!-- NEW CHAT INTERFACE -->
-    <!-- Chat Toggle Button -->
-    <button id="chatToggle" class="chat-toggle">
-        💬
-        <span id="chatBadge" class="chat-badge"></span>
-    </button>
-
-    <!-- Chat Panel -->
-    <div id="chatPanel" class="chat-panel hidden">
-        <div class="chat-header">
-            <h6 class="mb-0">💬 Chat dengan Driver</h6>
-            <div class="d-flex align-items-center gap-2">
-                <select id="chatUnitSelect" class="form-select form-select-sm chat-unit-select">
-                    <option value="">Pilih Driver...</option>
-                </select>
-                <button class="btn btn-sm btn-light" onclick="toggleChat()">
-                    ✕
-                </button>
-            </div>
-        </div>
-        
-        <div id="chatMessages" class="chat-messages">
-            <div class="chat-placeholder text-center text-muted py-4">
-                <small>Pilih driver dari dropdown di atas untuk memulai percakapan...</small>
-            </div>
-        </div>
-        
-        <div class="chat-input-container">
-            <div class="input-group">
-                <input type="text" id="chatInput" class="form-control chat-input" 
-                       placeholder="Ketik pesan..." maxlength="500" disabled
-                       onkeypress="handleChatInput(event)">
-                <button id="sendChatButton" class="btn btn-primary" onclick="sendChatMessage()" disabled>
-                    Kirim
-                </button>
-            </div>
-            <small class="text-muted d-block mt-1">Tekan Enter atau klik Kirim untuk mengirim pesan</small>
-        </div>
-    </div>
-
     <!-- Loading Spinner -->
     <div id="loadingSpinner" class="d-none position-fixed top-50 start-50 translate-middle">
         <div class="text-center bg-light rounded p-4 shadow">
@@ -822,7 +567,6 @@
             <p class="mb-0 text-success">Menyambungkan ke Firebase...</p>
         </div>
     </div>
-
     <!-- Notification Container -->
     <div id="notificationContainer" class="position-fixed top-0 end-0 p-3" style="z-index: 9999;"></div>
     <div class="offline-status-indicators">
@@ -830,23 +574,18 @@
         <span id="syncStatusIndicator" class="badge bg-secondary">📡 Sync Unknown</span>
         <span id="healthIndicator" class="badge bg-info">🔍 Checking Health...</span>
     </div>
-
     <!-- JavaScript Libraries -->
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-    
     <!-- External JavaScript -->
     <script src="script-monitor.js"></script>
     <script>
-        // ✅ SERVICE WORKER REGISTRATION - TAMBAHKAN DI monitor.html
+        // ✅ SERVICE WORKER REGISTRATION
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', function() {
-                // Pastikan path ke service-worker.js benar
                 navigator.serviceWorker.register('/service-worker.js')
                     .then(function(registration) {
-                        console.log('✅ ServiceWorker registered successfully with scope:', registration.scope);
-                        
-                        // Kirim pesan ke Service Worker bahwa ini adalah context monitor
+                        console.log('✅ ServiceWorker registered');
                         if (registration.active) {
                             registration.active.postMessage({
                                 type: 'CONTEXT_IDENTIFICATION',
@@ -857,347 +596,58 @@
                     .catch(function(error) {
                         console.log('❌ ServiceWorker registration failed:', error);
                     });
+                navigator.serviceWorker.addEventListener('message', event => {
+                    const { type, data } = event.data;
+                    console.log('📩 Message from Service Worker:', type);
+                    if (type === 'OFFLINE_POSITIONS_READY' && window.gpsSystem) {
+                        window.gpsSystem.processOfflinePositions(data);
+                    }
+                });
             });
-
-            // Listen for messages from Service Worker
-            navigator.serviceWorker.addEventListener('message', event => {
-                const { type, data } = event.data;
-                console.log('📩 Message from Service Worker:', type);
-                
-                // Handle offline positions data jika ada
-                if (type === 'OFFLINE_POSITIONS_READY' && window.gpsSystem) {
-                    window.gpsSystem.processOfflinePositions(data);
-                }
-            });
-        } else {
-            console.log('❌ Service Worker not supported in this browser');
         }
     </script>
-    
-    <!-- ✅ ENHANCED GLOBAL FUNCTIONS - REAL FIREBASE CHAT INTEGRATION -->
+    <!-- ✅ GLOBAL FUNCTIONS - HANYA UNTUK SISTEM CHAT MONITOR -->
     <script>
-        // Firebase configuration - GANTI DENGAN KONFIGURASI FIREBASE ANDA
+        // Firebase configuration
         const firebaseConfig = {
-            apiKey: "your-api-key",
-            authDomain: "your-project.firebaseapp.com",
-            databaseURL: "https://your-project-default-rtdb.asia-southeast1.firebasedatabase.app",
-            projectId: "your-project",
-            storageBucket: "your-project.appspot.com",
-            messagingSenderId: "123456789",
-            appId: "your-app-id"
+            apiKey: "AIzaSyBMiER_5b51IEEoxivkCliRC0WID1f-yzk",
+            authDomain: "joi-gps-tracker.firebaseapp.com",
+            databaseURL: "https://joi-gps-tracker-default-rtdb.asia-southeast1.firebasedatabase.app",
+            projectId: "joi-gps-tracker",
+            storageBucket: "joi-gps-tracker.firebasestorage.app",
+            messagingSenderId: "216572191895",
+            appId: "1:216572191895:web:a4fef1794daf200a2775d2"
         };
-
-        // Initialize Firebase
         const app = firebase.initializeApp(firebaseConfig);
         const database = firebase.database();
 
-        // Global variables for chat
-        let currentChatUnit = null;
-        let chatListeners = {};
-
-        // ✅ FIREBASE CHAT FUNCTIONS
-        function initializeFirebaseChat() {
-            console.log('🔥 Initializing Firebase Chat System');
-            
-            // Listen for new units to populate chat dropdown
-            database.ref('units').on('value', (snapshot) => {
-                const units = snapshot.val();
-                populateChatUnitSelect(units);
-            });
-        }
-
-        function populateChatUnitSelect(units) {
-            const unitSelect = document.getElementById('chatUnitSelect');
-            const monitorUnitSelect = document.getElementById('monitorChatUnitSelect');
-            
-            if (!unitSelect || !monitorUnitSelect) return;
-            
-            // Clear existing options except the first one
-            unitSelect.innerHTML = '<option value="">Pilih Driver...</option>';
-            monitorUnitSelect.innerHTML = '<option value="">Pilih Unit...</option>';
-            
-            if (units) {
-                Object.keys(units).forEach(unitId => {
-                    const unit = units[unitId];
-                    if (unit.unitName) {
-                        const option = document.createElement('option');
-                        option.value = unitId;
-                        option.textContent = `${unit.unitName} - ${unit.driverName || 'Driver'}`;
-                        
-                        const monitorOption = option.cloneNode(true);
-                        
-                        unitSelect.appendChild(option);
-                        monitorUnitSelect.appendChild(monitorOption);
-                    }
-                });
-            }
-        }
-
-        function selectChatUnit(unitId) {
-            if (!unitId) {
-                showChatNotification('Pilih driver terlebih dahulu', 'warning');
-                return;
-            }
-            
-            currentChatUnit = unitId;
-            
-            // Enable chat input
-            const chatInput = document.getElementById('chatInput');
-            const sendBtn = document.getElementById('sendChatButton');
-            if (chatInput && sendBtn) {
-                chatInput.disabled = false;
-                sendBtn.disabled = false;
-                chatInput.placeholder = "Ketik pesan untuk driver...";
-                chatInput.focus();
-            }
-            
-            // Load chat history
-            loadChatHistory(unitId);
-            
-            // Setup real-time listener for new messages
-            setupChatListener(unitId);
-            
-            showChatNotification(`Chat dengan ${getUnitName(unitId)} dimulai`, 'success');
-        }
-
-        function getUnitName(unitId) {
-            const unitSelect = document.getElementById('chatUnitSelect');
-            const option = unitSelect.querySelector(`option[value="${unitId}"]`);
-            return option ? option.textContent : 'Driver';
-        }
-
-        function loadChatHistory(unitId) {
-            const chatRef = database.ref(`chats/${unitId}`);
-            
-            chatRef.orderByChild('timestamp').limitToLast(50).once('value', (snapshot) => {
-                const messages = snapshot.val();
-                displayChatHistory(messages, unitId);
-            });
-        }
-
-        function setupChatListener(unitId) {
-            // Remove previous listener if exists
-            if (chatListeners[unitId]) {
-                chatListeners[unitId]();
-            }
-            
-            const chatRef = database.ref(`chats/${unitId}`);
-            
-            chatListeners[unitId] = chatRef.orderByChild('timestamp').limitToLast(1).on('child_added', (snapshot) => {
-                const message = snapshot.val();
-                if (message.sender !== 'monitor') { // Only show messages from driver
-                    addChatMessageToUI(message.sender, message.text, false, message.timestamp);
-                    updateChatBadge(1); // Show notification badge
-                }
-            });
-        }
-
-        function displayChatHistory(messages, unitId) {
-            const chatMessages = document.getElementById('chatMessages');
-            if (!chatMessages) return;
-            
-            // Clear existing messages
-            chatMessages.innerHTML = '';
-            
-            if (!messages) {
-                addChatMessageToUI('System', 'Belum ada pesan. Mulai percakapan sekarang!', false, Date.now());
-                return;
-            }
-            
-            // Convert messages to array and sort by timestamp
-            const messagesArray = Object.values(messages).sort((a, b) => a.timestamp - b.timestamp);
-            
-            messagesArray.forEach(message => {
-                const isSent = message.sender === 'monitor';
-                addChatMessageToUI(message.sender, message.text, isSent, message.timestamp);
-            });
-            
-            chatMessages.scrollTop = chatMessages.scrollHeight;
-        }
-
-        // ✅ FIXED CHAT INPUT HANDLER - SUPPORTS ENTER KEY
-        function handleChatInput(event) {
-            if (event.key === 'Enter') {
-                event.preventDefault();
-                sendChatMessage();
-                return false;
-            }
-        }
-
-        // ✅ REAL CHAT MESSAGE SENDING TO FIREBASE
-        function sendChatMessage() {
-            if (!currentChatUnit) {
-                showChatNotification('Pilih driver terlebih dahulu', 'warning');
-                return;
-            }
-            
-            const chatInput = document.getElementById('chatInput');
-            const message = chatInput.value.trim();
-            
-            if (message) {
-                const messageData = {
-                    text: message,
-                    sender: 'monitor',
-                    timestamp: Date.now(),
-                    read: false
-                };
-                
-                // Save to Firebase
-                const chatRef = database.ref(`chats/${currentChatUnit}`);
-                const newMessageRef = chatRef.push();
-                
-                newMessageRef.set(messageData)
-                    .then(() => {
-                        // Add message to UI immediately
-                        addChatMessageToUI('Anda', message, true, Date.now());
-                        
-                        // Clear input field
-                        chatInput.value = '';
-                        chatInput.focus();
-                        
-                        console.log('✅ Pesan terkirim ke Firebase');
-                    })
-                    .catch((error) => {
-                        console.error('❌ Gagal mengirim pesan:', error);
-                        showChatNotification('Gagal mengirim pesan', 'danger');
-                    });
-                
-            } else {
-                showChatNotification('Silakan ketik pesan terlebih dahulu', 'warning');
-                chatInput.focus();
-            }
-        }
-
-        function addChatMessageToUI(sender, message, isSent, timestamp) {
-            const chatMessages = document.getElementById('chatMessages');
-            if (!chatMessages) return;
-
-            // Remove placeholder if it exists
-            const placeholder = chatMessages.querySelector('.chat-placeholder');
-            if (placeholder) {
-                placeholder.remove();
-            }
-
-            const messageDiv = document.createElement('div');
-            messageDiv.className = `chat-message ${isSent ? 'message-sent' : 'message-received'}`;
-            
-            const time = new Date(timestamp);
-            const timeString = time.toLocaleTimeString('id-ID', { 
-                hour: '2-digit', 
-                minute: '2-digit' 
-            });
-            
-            const displayName = isSent ? 'Anda' : (sender === 'driver' ? 'Driver' : sender);
-            
-            messageDiv.innerHTML = `
-                ${!isSent ? `<div class="message-sender">${displayName}</div>` : ''}
-                <div>${message}</div>
-                <div class="message-time">${timeString} ${isSent ? '✓' : ''}</div>
-            `;
-            
-            chatMessages.appendChild(messageDiv);
-            chatMessages.scrollTop = chatMessages.scrollHeight;
-            
-            // Add animation
-            messageDiv.style.animation = 'slideInUp 0.3s ease-out';
-        }
-
-        // ✅ ENHANCED CHAT TOGGLE FUNCTION
-        function toggleChat() {
-            const chatPanel = document.getElementById('chatPanel');
-            if (chatPanel) {
-                chatPanel.classList.toggle('hidden');
-                
-                // Focus input when opening chat
-                if (!chatPanel.classList.contains('hidden')) {
-                    setTimeout(() => {
-                        const chatInput = document.getElementById('chatInput');
-                        if (chatInput && !chatInput.disabled) {
-                            chatInput.focus();
-                        }
-                    }, 300);
-                }
-            }
-        }
-
-        function initializeChat() {
-            const chatToggle = document.getElementById('chatToggle');
-            const chatPanel = document.getElementById('chatPanel');
-            const sendButton = document.getElementById('sendChatButton');
-            const chatInput = document.getElementById('chatInput');
-            const unitSelect = document.getElementById('chatUnitSelect');
-
-            if (chatToggle && chatPanel) {
-                chatToggle.addEventListener('click', function() {
-                    toggleChat();
-                });
-            }
-
-            if (unitSelect) {
-                unitSelect.addEventListener('change', function() {
-                    selectChatUnit(this.value);
-                });
-            }
-
-            console.log('✅ Chat system initialized');
-        }
-
-        function updateChatBadge(count) {
-            const chatBadge = document.getElementById('chatBadge');
-            if (chatBadge) {
-                if (count > 0) {
-                    chatBadge.textContent = count;
-                    chatBadge.style.display = 'flex';
-                } else {
-                    chatBadge.style.display = 'none';
-                }
-            }
-        }
-
-        function showChatNotification(message, type = 'info') {
-            const notification = document.createElement('div');
-            notification.className = `alert alert-${type} alert-dismissible fade show`;
-            notification.style.cssText = 'position: fixed; top: 20px; right: 20px; z-index: 9999; min-width: 300px;';
-            notification.innerHTML = `
-                ${message}
-                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-            `;
-            
-            document.getElementById('notificationContainer').appendChild(notification);
-            
-            // Auto remove after 3 seconds
-            setTimeout(() => {
-                if (notification.parentNode) {
-                    notification.remove();
-                }
-            }, 3000);
-        }
-
-        // ✅ OTHER EXISTING FUNCTIONS (tetap sama)
+        // ✅ CHAT FUNCTIONS YANG BENAR
         function toggleMonitorChat() {
-            if (window.gpsSystem) {
-                window.gpsSystem.toggleMonitorChat();
-            } else {
-                console.warn('GPS System belum diinisialisasi');
-                const chatWindow = document.getElementById('monitorChatWindow');
-                if (chatWindow) {
-                    const isVisible = chatWindow.style.display === 'flex';
-                    chatWindow.style.display = isVisible ? 'none' : 'flex';
-                }
-            }
+            if (window.gpsSystem) window.gpsSystem.toggleMonitorChat();
         }
-
         function handleMonitorChatInput(event) {
-            if (window.gpsSystem) {
-                window.gpsSystem.handleMonitorChatInput(event);
-            } else if (event.key === 'Enter') {
-                sendMonitorMessage();
-            }
+            if (window.gpsSystem) window.gpsSystem.handleMonitorChatInput(event);
+        }
+        function sendMonitorMessage() {
+            if (window.gpsSystem) window.gpsSystem.sendMonitorMessage();
         }
 
-        function sendMonitorMessage() {
-            if (window.gpsSystem) {
-                window.gpsSystem.sendMonitorMessage();
+        // ✅ OTHER EXISTING FUNCTIONS (tanpa konflik)
+        function forceCleanup() {
+            if (window.gpsSystem) window.gpsSystem.forceCleanupAllData();
+        }
+        function refreshData() {
+            if (window.gpsSystem) window.gpsSystem.refreshData();
+        }
+        function exportData() {
+            if (window.gpsSystem) window.gpsSystem.downloadRouteData();
+        }
+        function toggleSidebar() {
+            const sidebar = document.querySelector('.sidebar');
+            const body = document.body;
+            if (sidebar) {
+                sidebar.classList.toggle('show');
+                body.classList.toggle('sidebar-open');
             }
         }
 
@@ -1212,71 +662,12 @@
         setInterval(updateClock, 1000);
         updateClock();
 
-        // ✅ ENHANCED SYSTEM READY CHECK
+        // ✅ INITIALIZE SYSTEM
         document.addEventListener('DOMContentLoaded', function() {
-            console.log('🚀 DOM Content Loaded - Initializing Systems');
-            
-            // Initialize clock immediately
+            console.log('🚀 DOM Content Loaded');
+            // Initialize clock
             updateClock();
-            
-            // Initialize chat interface
-            initializeChat();
-            
-            // Initialize Firebase chat system
-            initializeFirebaseChat();
-            
-            // Add demo message
-            setTimeout(() => {
-                const chatMessages = document.getElementById('chatMessages');
-                if (chatMessages) {
-                    const placeholder = chatMessages.querySelector('.chat-placeholder');
-                    if (placeholder) {
-                        placeholder.innerHTML = '<small>Pilih driver dari dropdown di atas untuk memulai percakapan real-time dengan driver mobile</small>';
-                    }
-                }
-            }, 1000);
-        });
-
-        // ✅ Existing functions tetap sama
-        function forceCleanup() {
-            if (window.gpsSystem) {
-                window.gpsSystem.forceCleanupAllData();
-                alert('Force cleanup executed! All sticky data removed.');
-            }
-        }
-
-        function refreshData() {
-            if (window.gpsSystem) {
-                window.gpsSystem.refreshData();
-            } else {
-                location.reload();
-            }
-        }
-
-        function exportData() {
-            if (window.gpsSystem) {
-                window.gpsSystem.downloadRouteData();
-            }
-        }
-
-        function toggleSidebar() {
-            const sidebar = document.querySelector('.sidebar');
-            const body = document.body;
-            if (sidebar) {
-                sidebar.classList.toggle('show');
-                body.classList.toggle('sidebar-open');
-            }
-        }
-
-        // Click outside handler
-        document.addEventListener('click', function(event) {
-            const chatPanel = document.getElementById('chatPanel');
-            const chatToggle = document.getElementById('chatToggle');
-            if (chatPanel && !chatPanel.classList.contains('hidden') && 
-                !chatPanel.contains(event.target) && 
-                event.target !== chatToggle) {
-                toggleChat();
-            }
+            // Other init jika diperlukan
         });
     </script>
 </body>
