@@ -1497,31 +1497,16 @@ class AdvancedSAGMGpsTracking {
 
     gradualCleanupInactiveUnits(activeUnits) {
         const now = Date.now();
-        const inactiveThreshold = 60000;
-        const removalThreshold = 120000;
+        
         this.units.forEach((unit, unitName) => {
-            if (!activeUnits.has(unitName)) {
-                const currentCount = this.inactiveUnitTracker.get(unitName) || 0;
-                this.inactiveUnitTracker.set(unitName, currentCount + 1);
-                const timeSinceLastUpdate = now - (this.lastDataTimestamps.get(unitName) || 0);
-                if (timeSinceLastUpdate > inactiveThreshold && unit.isOnline) {
-                    unit.isOnline = false;
-                    this.logData(`Unit marked offline: ${unitName}`, 'warning', {
-                        unit: unitName,
-                        lastUpdate: timeSinceLastUpdate
-                    });
-                }
-                if (timeSinceLastUpdate > removalThreshold) {
-                    this.logData(`Removing inactive unit: ${unitName}`, 'info', {
-                        unit: unitName,
-                        inactiveTime: timeSinceLastUpdate
-                    });
-                    this.removeUnitCompletely(unitName);
-                }
-            } else {
-                this.inactiveUnitTracker.set(unitName, 0);
+        if (!activeUnits.has(unitName)) {
+            const timeSinceLastUpdate = now - (this.lastDataTimestamps.get(unitName) || 0);
+            if (timeSinceLastUpdate > 60000 && unit.isOnline) {
+                unit.isOnline = false;
+                this.logData(`Unit marked offline: ${unitName}`, 'warning');
             }
-        });
+        }
+    });
     }
 
     forceCleanupInactiveUnits() {
@@ -1595,17 +1580,7 @@ class AdvancedSAGMGpsTracking {
         this.scheduleRender();
     }
 
-    cleanupOrphanedMarkers() {
-        this.markers.forEach((marker, unitName) => {
-            if (!this.units.has(unitName)) {
-                console.log(`🧹 Removing orphaned marker: ${unitName}`);
-                if (marker && this.map) {
-                    this.map.removeLayer(marker);
-                }
-                this.markers.delete(unitName);
-            }
-        });
-    }
+    
 
     cleanupFirebaseListeners() {
         this.firebaseListeners.forEach((listener, key) => {
@@ -1664,12 +1639,7 @@ class AdvancedSAGMGpsTracking {
     startPeriodicTasks() {
         this.intervals.forEach(interval => clearInterval(interval));
         this.intervals.clear();
-        const cleanupInterval = setInterval(() => {
-            this.forceCleanupInactiveUnits();
-            this.cleanupOrphanedMarkers();
-            this.lastCleanupTime = new Date();
-        }, 60000);
-        this.intervals.add(cleanupInterval);
+        
         const healthInterval = setInterval(() => {
             this.logData('System health check', 'info', {
                 activeUnits: this.units.size,
@@ -1920,36 +1890,33 @@ class AdvancedSAGMGpsTracking {
     }
 
     downloadRouteData() {
-        const exportData = {
-            timestamp: new Date().toISOString(),
-            totalUnits: this.units.size,
-            analytics: {
-                averageScore: this.avgPerformanceScore,
-                totalDistance: this.totalDistance,
-                totalFuel: this.totalFuelConsumption,
-                totalViolations: this.totalViolations
-            },
-            routes: {}
-        };
-        this.units.forEach((unit, unitName) => {
-            exportData.routes[unitName] = {
-                driver: unit.driver,
-                totalDistance: unit.distance,
-                routePoints: this.unitHistory.get(unitName)?.length || 0,
-                performanceScore: unit.analytics.performanceScore,
-                violations: unit.analytics.violations?.length || 0,
-                history: this.unitHistory.get(unitName) || []
-            };
-        });
-        const dataStr = JSON.stringify(exportData, null, 2);
-        const dataBlob = new Blob([dataStr], {type: 'application/json'});
-        const url = URL.createObjectURL(dataBlob);
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = `advanced-routes-data-${new Date().toISOString().split('T')[0]}.json`;
-        link.click();
-        this.logData('Advanced route data exported', 'success');
-    }
+    const exportLines = [];
+    exportLines.push("NAMA DT,KECEPATAN (km/h),TOTAL JARAK (km)");
+
+    this.units.forEach((unit, unitName) => {
+        const history = this.unitHistory.get(unitName) || [];
+        if (history.length === 0) {
+            // Jika tidak ada history, export data real-time terakhir
+            exportLines.push(`${unitName},${unit.speed},${unit.distance}`);
+        } else {
+            // Export setiap titik dalam history
+            history.forEach(point => {
+                exportLines.push(`${unitName},${point.speed || 0},${point.distance || 0}`);
+            });
+        }
+    });
+
+    // Buat file CSV
+    const csvContent = exportLines.join("\n");
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `gps-data-per-second-${new Date().toISOString().split('T')[0]}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+    this.logData('Data per detik berhasil diekspor', 'success');
+}
 
     setupDataLogger() {
         this.loadLogs();
