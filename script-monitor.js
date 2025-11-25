@@ -107,6 +107,10 @@ class AdvancedSAGMGpsTracking {
             maintenanceIntervals: {
                 oilChange: 2500,
                 tireRotation: 1000,
+                gearOilChange: 10000,
+                differentialOilChange: 10000,
+                fuelAndOilFilterChange: 2500,
+                airFilterChange: 5000,
                 brakeService: 8000,
                 majorService: 10000
             }
@@ -125,6 +129,41 @@ class AdvancedSAGMGpsTracking {
                 name: "Kantor Kebun PT SAGM",
                 type: "office", 
                 radius: 300
+            },
+            Afdeling_1: {
+                lat: -0.39846575920901245,
+                lng: 102.91875899322632,
+                name: "Kantor Afdeling 1",
+                type: "afdeling_office",
+                radius: 150
+            },
+            Afdeling_2: {
+                lat: -0.39846575920901245,
+                lng: 102.91875899322632,
+                name: "Kantor Afdeling 2",
+                type: "afdeling_office",
+                radius: 150
+            },
+            Afdeling_3: {
+                lat: -0.39846575920901245,
+                lng: 102.91875899322632,
+                name: "Kantor Afdeling 3",
+                type: "afdeling_office",
+                radius: 150
+            },
+            Afdeling_4: {
+                lat: -0.33507085388562874,
+                lng: 102.94759502462418,
+                name: "Kantor Afdeling 4",
+                type: "afdeling_office",
+                radius: 150
+            },
+            Afdeling_5: {
+                lat: -0.30536091092084,
+                lng: 102.95738150638326,
+                name: "Kantor Afdeling 5",
+                type: "afdeling_office",
+                radius: 150
             }
         };
         this.config = {
@@ -987,61 +1026,104 @@ class AdvancedSAGMGpsTracking {
     }
 
     addLocationMarkers() {
-        try {
-            this.importantMarkers.forEach(marker => {
-                if (marker && this.map) {
-                    this.map.removeLayer(marker);
-                }
-            });
-            this.importantMarkers = [];
-            const pksIcon = L.divIcon({
-                className: 'custom-marker',
-                html: `<div class="marker-icon pks" title="PKS SAGM">🏭</div>`,
-                iconSize: [32, 32],
-                iconAnchor: [16, 16]
-            });
-            const pksMarker = L.marker([this.importantLocations.PKS_SAGM.lat, this.importantLocations.PKS_SAGM.lng], { icon: pksIcon })
-                .bindPopup(this.createLocationInfo('PKS SAGM', 'pks'))
-                .addTo(this.map);
-            const officeIcon = L.divIcon({
-                className: 'custom-marker',
-                html: `<div class="marker-icon office" title="Kantor Kebun">🏢</div>`,
-                iconSize: [32, 32],
-                iconAnchor: [16, 16]
-            });
-            const officeMarker = L.marker([this.importantLocations.KANTOR_KEBUN.lat, this.importantLocations.KANTOR_KEBUN.lng], { icon: officeIcon })
-                .bindPopup(this.createLocationInfo('Kantor Kebun PT SAGM', 'office'))
-                .addTo(this.map);
-            this.importantMarkers.push(pksMarker, officeMarker);
-            console.log('✅ Location markers added');
-        } catch (error) {
-            console.error('Failed to add location markers:', error);
-        }
+    try {
+        this.importantMarkers.forEach(marker => {
+            if (marker && this.map) {
+                this.map.removeLayer(marker);
+            }
+        });
+        this.importantMarkers = [];
+
+        // === MARKER PKS SAGM ===
+        const pksIcon = L.divIcon({
+            className: 'custom-marker',
+            html: `<div class="marker-icon pks" title="PKS SAGM">🏭</div>`,
+            iconSize: [32, 32],
+            iconAnchor: [16, 16]
+        });
+        const pksMarker = L.marker([this.importantLocations.PKS_SAGM.lat, this.importantLocations.PKS_SAGM.lng], { icon: pksIcon })
+            .bindPopup(this.createLocationInfo('PKS SAGM', 'pks'))
+            .addTo(this.map);
+        this.importantMarkers.push(pksMarker);
+
+        // === MARKER KANTOR KEBUN ===
+        const officeIcon = L.divIcon({
+            className: 'custom-marker',
+            html: `<div class="marker-icon office" title="Kantor Kebun">🏢</div>`,
+            iconSize: [32, 32],
+            iconAnchor: [16, 16]
+        });
+        const officeMarker = L.marker([this.importantLocations.KANTOR_KEBUN.lat, this.importantLocations.KANTOR_KEBUN.lng], { icon: officeIcon })
+            .bindPopup(this.createLocationInfo('Kantor Kebun PT SAGM', 'office'))
+            .addTo(this.map);
+        this.importantMarkers.push(officeMarker);
+
+        // === MARKER KANTOR AFDELING 1–5 ===
+        const afdelingIcon = L.divIcon({
+            className: 'custom-marker',
+            html: `<div class="marker-icon afdeling" title="Kantor Afdeling">🏢</div>`,
+            iconSize: [32, 32],
+            iconAnchor: [16, 16]
+        });
+
+        const afdelingMarkers = [
+            { key: 'Afdeling_1', name: 'Kantor Afdeling 1' },
+            { key: 'Afdeling_2', name: 'Kantor Afdeling 2' },
+            { key: 'Afdeling_3', name: 'Kantor Afdeling 3' },
+            { key: 'Afdeling_4', name: 'Kantor Afdeling 4' },
+            { key: 'Afdeling_5', name: 'Kantor Afdeling 5' }
+        ];
+
+        afdelingMarkers.forEach(({ key, name }) => {
+            if (this.importantLocations[key]) {
+                const marker = L.marker([this.importantLocations[key].lat, this.importantLocations[key].lng], { icon: afdelingIcon })
+                    .bindPopup(this.createLocationInfo(name, 'afdeling_office'))
+                    .addTo(this.map);
+                this.importantMarkers.push(marker);
+            }
+        });
+
+        console.log('✅ Location markers added');
+    } catch (error) {
+        console.error('Failed to add location markers:', error);
     }
+}
 
     createLocationInfo(name, type) {
-        return `
-            <div class="unit-popup">
-                <div class="popup-header">
-                    <h6 class="mb-0">${type === 'pks' ? '🏭' : '🏢'} ${name}</h6>
+    let typeLabel = '';
+    if (type === 'pks') {
+        typeLabel = 'Pabrik Kelapa Sawit';
+    } else if (type === 'office') {
+        typeLabel = 'Kantor Operasional';
+    } else if (type === 'afdeling_office') {
+        typeLabel = 'Kantor Afdeling';
+    } else {
+        typeLabel = 'Lokasi';
+    }
+
+    return `
+        <div class="unit-popup">
+            <div class="popup-header">
+                <h6 class="mb-0">${type === 'pks' ? '🏭' : '🏢'} ${name}</h6>
+            </div>
+            <div class="info-grid">
+                <div class="info-item">
+                    <span class="info-label">Tipe:</span>
+                    <span class="info-value">${typeLabel}</span>
                 </div>
-                <div class="info-grid">
-                    <div class="info-item">
-                        <span class="info-label">Tipe:</span>
-                        <span class="info-value">${type === 'pks' ? 'Pabrik Kelapa Sawit' : 'Kantor Operasional'}</span>
-                    </div>
-                    <div class="info-item">
-                        <span class="info-label">Status:</span>
-                        <span class="info-value">Operasional</span>
-                    </div>
-                    <div class="info-item">
-                        <span class="info-label">Lokasi:</span>
-                        <span class="info-value">Kebun Tempuling</span>
-                    </div>
+                <div class="info-item">
+                    <span class="info-label">Status:</span>
+                    <span class="info-value">Operasional</span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">Lokasi:</span>
+                    <span class="info-value">Kebun Tempuling</span>
                 </div>
             </div>
-        `;
+        </div>
+    `;
     }
+
 
     addHistoryPoint(unit) {
         if (!this.unitHistory.has(unit.name)) {
