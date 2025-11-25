@@ -474,13 +474,49 @@ class AdvancedSAGMGpsTracking {
     }
     setupChatWindowBehavior() {
     console.log('💬 Setting up chat window behavior...');
-    try {
-        // Basic chat window behavior
-        this.setupBasicChatBehavior();
-        console.log('✅ Chat window behavior setup completed');
-    } catch (error) {
-        console.warn('⚠️ Chat window behavior setup failed:', error);
+    this.setupBasicChatBehavior();
+}
+
+setupBasicChatBehavior() {
+    this.setupChatAutoHide();
+    this.setupClickOutsideToClose();
+    this.setupEscapeKeyClose();
+}
+
+setupChatAutoHide() {
+    let chatTimeout;
+    const resetTimer = () => {
+        clearTimeout(chatTimeout);
+        if (this.isMonitorChatOpen) {
+            chatTimeout = setTimeout(() => {
+                if (this.isMonitorChatOpen) {
+                    this.toggleMonitorChat();
+                }
+            }, 600000); // 10 menit
+        }
+    };
+    const chatInput = document.getElementById('monitorChatInput');
+    const chatWindow = document.getElementById('monitorChatWindow');
+    if (chatInput) {
+        chatInput.addEventListener('input', resetTimer);
+        chatInput.addEventListener('focus', resetTimer);
     }
+    if (chatWindow) {
+        chatWindow.addEventListener('mousemove', resetTimer);
+        chatWindow.addEventListener('click', resetTimer);
+    }
+}
+
+setupClickOutsideToClose() {
+    // Akan di-handle di toggleMonitorChat via event listeners
+}
+
+setupEscapeKeyClose() {
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && this.isMonitorChatOpen) {
+            this.toggleMonitorChat();
+        }
+    });
 }
 
 setupBasicChatBehavior() {
@@ -575,61 +611,41 @@ setupEscapeKeyClose() {
     this.isMonitorChatOpen = !this.isMonitorChatOpen;
     const chatWindow = document.getElementById('monitorChatWindow');
     const chatToggle = document.getElementById('monitorChatToggle');
-    
-    console.log('💬 Toggle chat:', this.isMonitorChatOpen);
-    
-    if (!chatWindow) {
-        console.error('❌ Chat window element not found!');
-        return;
-    }
-    
+    if (!chatWindow) return;
+
     if (this.isMonitorChatOpen) {
-        // Buka chat
+        this.cleanupChatEventListeners();
+        this.setupChatEventListeners();
         chatWindow.style.display = 'flex';
         chatWindow.style.animation = 'slideInUp 0.3s ease-out forwards';
-        
-        // Setup event listeners
-        this.setupChatEventHandlers();
-        
-        // Update UI
         this.updateMonitorChatUnitSelect();
         this.updateMonitorChatUI();
-        
-        // Focus input jika ada unit aktif
         if (this.activeChatUnit) {
             setTimeout(() => {
                 const chatInput = document.getElementById('monitorChatInput');
-                if (chatInput) {
-                    chatInput.focus();
-                    console.log('🎯 Focused chat input for:', this.activeChatUnit);
-                }
+                if (chatInput) chatInput.focus();
             }, 350);
         }
-        
-        // Update toggle button
         if (chatToggle) {
             chatToggle.innerHTML = '💬 Tutup Chat <span id="monitorUnreadBadge" class="badge bg-danger" style="display: none;"></span>';
             chatToggle.classList.add('btn-secondary');
             chatToggle.classList.remove('btn-primary');
         }
     } else {
-        // Tutup chat
         chatWindow.style.animation = 'slideOutDown 0.25s ease-in forwards';
         this.stopMonitorTyping();
-        
-        // Update toggle button
         if (chatToggle) {
             chatToggle.innerHTML = '💬 Chat dengan Driver <span id="monitorUnreadBadge" class="badge bg-danger" style="display: none;"></span>';
             chatToggle.classList.add('btn-primary');
             chatToggle.classList.remove('btn-secondary');
         }
-        
         setTimeout(() => {
             if (!this.isMonitorChatOpen) {
                 chatWindow.style.display = 'none';
                 chatWindow.style.animation = '';
             }
         }, 250);
+        this.cleanupChatEventListeners();
     }
 }
 
@@ -1591,32 +1607,38 @@ setupEscapeKeyClose() {
     }
 
     removeUnitCompletely(unitName) {
-        console.log(`🗑️ Removing unit completely: ${unitName}`);
-        this.units.delete(unitName);
-        const marker = this.markers.get(unitName);
-        if (marker && this.map) {
-            this.map.removeLayer(marker);
-            this.markers.delete(unitName);
-        }
-        const polyline = this.unitPolylines.get(unitName);
-        if (polyline && this.map) {
-            this.map.removeLayer(polyline);
-            this.unitPolylines.delete(unitName);
-        }
-        this.driverOnlineStatus.delete(unitName);
-        this.lastDataTimestamps.delete(unitName);
-        this.unitSessions.delete(unitName);
-        this.inactiveUnitTracker.delete(unitName);
-        this.unitHistory.delete(unitName);
-        this.routeColors.delete(unitName);
-        this.cleanupUnitChatListener(unitName);
-        this.analyticsEngine.cleanupUnit(unitName);
-        this.violationDetector.cleanupUnit(unitName);
-        this.fuelMonitor.cleanupUnit(unitName);
-        this.performanceManager.cleanupUnit(unitName);
-        this.maintenancePredictor.cleanupUnit(unitName);
-        this.scheduleRender();
+    console.log(`🗑️ Removing unit from display (keeping history): ${unitName}`);
+    
+    // Hanya hapus dari peta dan struktur aktif, JANGAN hapus history
+    this.units.delete(unitName);
+    
+    const marker = this.markers.get(unitName);
+    if (marker && this.map) {
+        this.map.removeLayer(marker);
+        this.markers.delete(unitName);
     }
+    
+    const polyline = this.unitPolylines.get(unitName);
+    if (polyline && this.map) {
+        this.map.removeLayer(polyline);
+        this.unitPolylines.delete(unitName);
+    }
+    
+    // Hapus dari status tracking aktif
+    this.driverOnlineStatus.delete(unitName);
+    this.lastDataTimestamps.delete(unitName);
+    this.unitSessions.delete(unitName);
+    this.inactiveUnitTracker.delete(unitName);
+    this.routeColors.delete(unitName);
+    this.cleanupUnitChatListener(unitName);
+    this.analyticsEngine.cleanupUnit(unitName);
+    this.violationDetector.cleanupUnit(unitName);
+    this.fuelMonitor.cleanupUnit(unitName);
+    this.performanceManager.cleanupUnit(unitName);
+    this.maintenancePredictor.cleanupUnit(unitName);
+    
+    this.scheduleRender();
+}
 
     cleanupUnitChatListener(unitName) {
         if (this.monitorChatRefs.has(unitName)) {
