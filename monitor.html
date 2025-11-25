@@ -467,6 +467,10 @@
                                     <div class="legend-color me-2" style="background-color: #e83e8c"></div>
                                     <small>🏢 Kantor Kebun</small>
                                 </div>
+                                <div class="d-flex align-items-center mb-2">
+                                    <div class="legend-color me-2" style="background-color: #28a745"></div>
+                                    <small>🏢 Afdeling 1–5</small>
+                                </div>
                             </div>
                             <div class="col-md-3">
                                 <h6 class="legend-title">Level Bahan Bakar</h6>
@@ -523,9 +527,9 @@
         </div>
     </div>
 
-    <!-- ✅ ENHANCED CHAT INTERFACE - BERSIH & HANYA SATU SISTEM -->
+    <!-- ✅ ENHANCED CHAT INTERFACE - HANYA SATU SISTEM -->
     <div id="monitorChatContainer">
-        <button id="monitorChatToggle" class="btn btn-primary chat-toggle-btn">
+        <button id="monitorChatToggle" class="btn btn-primary chat-toggle-btn" onclick="toggleMonitorChat()">
             💬 Chat dengan Driver <span id="monitorUnreadBadge" class="badge bg-danger" style="display: none;"></span>
         </button>
         <div id="monitorChatWindow" class="chat-window">
@@ -598,7 +602,6 @@
                     });
                 navigator.serviceWorker.addEventListener('message', event => {
                     const { type, data } = event.data;
-                    console.log('📩 Message from Service Worker:', type);
                     if (type === 'OFFLINE_POSITIONS_READY' && window.gpsSystem) {
                         window.gpsSystem.processOfflinePositions(data);
                     }
@@ -626,13 +629,15 @@
             if (window.gpsSystem) window.gpsSystem.toggleMonitorChat();
         }
         function handleMonitorChatInput(event) {
-            if (window.gpsSystem) window.gpsSystem.handleMonitorChatInput(event);
+            if (event.key === 'Enter' && window.gpsSystem) {
+                window.gpsSystem.sendMonitorMessage();
+            }
         }
         function sendMonitorMessage() {
             if (window.gpsSystem) window.gpsSystem.sendMonitorMessage();
         }
 
-        // ✅ OTHER EXISTING FUNCTIONS (tanpa konflik)
+        // ✅ OTHER EXISTING FUNCTIONS
         function forceCleanup() {
             if (window.gpsSystem) window.gpsSystem.forceCleanupAllData();
         }
@@ -664,10 +669,24 @@
 
         // ✅ INITIALIZE SYSTEM
         document.addEventListener('DOMContentLoaded', function() {
-            console.log('🚀 DOM Content Loaded');
-            // Initialize clock
-            updateClock();
-            // Other init jika diperlukan
+            if (window.gpsSystem) {
+                console.log('🧹 Cleaning up existing system');
+                window.gpsSystem.cleanup();
+            }
+            try {
+                window.gpsSystem = new AdvancedSAGMGpsTracking();
+                console.log('✅ Advanced Monitor System initialized');
+            } catch (error) {
+                console.error('❌ Failed to initialize monitor system:', error);
+                alert('Gagal memulai sistem monitor. Cek konsol untuk detail error.');
+            }
+        });
+
+        // Cleanup on page unload
+        window.addEventListener('beforeunload', function() {
+            if (window.gpsSystem) {
+                window.gpsSystem.cleanup();
+            }
         });
     </script>
 </body>
