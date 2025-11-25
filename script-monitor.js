@@ -2260,7 +2260,9 @@ class AdvancedSAGMGpsTracking {
                 data: data
             }, [messageChannel.port2]);
         });
+
     }
+    cleanupOrphanedMarkers(){}
 }
 
 // ==== ANALYTICS ENGINE ====
@@ -4272,3 +4274,4 @@ function sendChatMessage() {
         window.gpsSystem.sendChatMessage();
     }
 }
+        
