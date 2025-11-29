@@ -45,6 +45,7 @@ class AdvancedSAGMGpsTracking {
         this.heatmapManager = new HeatmapManager(this);
         this.maintenancePredictor = new MaintenancePredictor(this);
         this.reportGenerator = new ReportGenerator(this);
+        this.speedAnalyzer = new SpeedAnalyzer(this);
         this.notificationSystem = new NotificationSystem(this);
         this.offlineQueue = new Map();
         this.isOnline = true;
@@ -72,6 +73,7 @@ class AdvancedSAGMGpsTracking {
         this.lastUpdate = new Date();
         this.autoRefreshInterval = null;
         this.firebaseListener = null;
+        
         // ✅ HANYA SISTEM CHAT MONITOR YANG BENAR
         this.monitorChatRefs = new Map();
         this.monitorChatMessages = new Map();
@@ -187,6 +189,7 @@ class AdvancedSAGMGpsTracking {
                 { name: 'Performance Manager', instance: this.performanceManager },
                 { name: 'Heatmap Manager', instance: this.heatmapManager },
                 { name: 'Maintenance Predictor', instance: this.maintenancePredictor },
+                { name: 'Speed Analyzer', instance: this.speedAnalyzer },
                 { name: 'Notification System', instance: this.notificationSystem }
             ];
             systems.forEach(system => {
@@ -2119,6 +2122,7 @@ setupEscapeKeyClose() {
         this.performanceManager.cleanup();
         this.heatmapManager.cleanup();
         this.maintenancePredictor.cleanup();
+        this.speedAnalyzer.cleanup();
         this.notificationSystem.cleanup();
         this.cleanupChatEventListeners();
         this.cleanupFirebaseListeners();
@@ -3804,7 +3808,494 @@ class ReportGenerator {
     }
 }
 
-// Initialize the advanced system
+class SpeedAnalyzer {
+    constructor(mainSystem) {
+        this.main = mainSystem;
+        this.speedRecords = new Map(); // Menyimpan record kecepatan per unit
+        this.maxSpeedRecords = new Map(); // Menyimpan kecepatan maksimal per unit
+        this.recordingInterval = null;
+    }
+
+    initialize() {
+        console.log('🚀 Speed Analyzer initialized');
+        this.startSpeedRecording();
+        this.setupExportButton();
+    }
+
+    startSpeedRecording() {
+        console.log('📊 Starting speed recording...');
+        
+        // Record speed setiap detik
+        this.recordingInterval = setInterval(() => {
+            this.recordCurrentSpeeds();
+        }, 1000); // Record setiap 1 detik
+    }
+
+    recordCurrentSpeeds() {
+        const currentTime = new Date();
+        
+        this.main.units.forEach((unit, unitName) => {
+            if (!unit.isOnline) return;
+
+            // Initialize records untuk unit baru
+            if (!this.speedRecords.has(unitName)) {
+                this.speedRecords.set(unitName, []);
+                this.maxSpeedRecords.set(unitName, {
+                    maxSpeed: 0,
+                    timestamp: null,
+                    location: null
+                });
+            }
+
+            const currentSpeed = parseFloat(unit.speed) || 0;
+            const currentDistance = parseFloat(unit.distance) || 0;
+
+            // Tambahkan record per detik
+            const speedRecord = {
+                timestamp: currentTime.toISOString(),
+                timeDisplay: currentTime.toLocaleTimeString('id-ID'),
+                dateDisplay: currentTime.toLocaleDateString('id-ID'),
+                speed: currentSpeed,
+                distance: currentDistance,
+                latitude: unit.latitude,
+                longitude: unit.longitude,
+                driver: unit.driver,
+                afdeling: unit.afdeling
+            };
+
+            this.speedRecords.get(unitName).push(speedRecord);
+
+            // Update kecepatan maksimal
+            const maxRecord = this.maxSpeedRecords.get(unitName);
+            if (currentSpeed > maxRecord.maxSpeed) {
+                maxRecord.maxSpeed = currentSpeed;
+                maxRecord.timestamp = currentTime.toISOString();
+                maxRecord.location = {
+                    lat: unit.latitude,
+                    lng: unit.longitude
+                };
+                maxRecord.driver = unit.driver;
+                maxRecord.afdeling = unit.afdeling;
+            }
+
+            // Batasi jumlah records (simpan max 24 jam = 86400 records per unit)
+            const records = this.speedRecords.get(unitName);
+            if (records.length > 86400) {
+                records.shift(); // Hapus record paling lama
+            }
+        });
+    }
+
+    getUnitSpeedData(unitName) {
+        return {
+            records: this.speedRecords.get(unitName) || [],
+            maxSpeed: this.maxSpeedRecords.get(unitName) || { maxSpeed: 0 }
+        };
+    }
+
+    getAllSpeedData() {
+        const allData = [];
+        
+        this.speedRecords.forEach((records, unitName) => {
+            const maxSpeed = this.maxSpeedRecords.get(unitName);
+            allData.push({
+                unitName: unitName,
+                records: records,
+                maxSpeed: maxSpeed
+            });
+        });
+
+        return allData;
+    }
+
+    setupExportButton() {
+        // Tambahkan button export di UI jika belum ada
+        const existingBtn = document.getElementById('exportSpeedDataBtn');
+        if (existingBtn) return;
+
+        const toolbar = document.querySelector('.dashboard-toolbar') || 
+                       document.querySelector('.card-header');
+        
+        if (toolbar) {
+            const exportBtn = document.createElement('button');
+            exportBtn.id = 'exportSpeedDataBtn';
+            exportBtn.className = 'btn btn-success btn-sm ms-2';
+            exportBtn.innerHTML = '📊 Export Speed Data (Excel)';
+            exportBtn.onclick = () => this.exportToExcel();
+            toolbar.appendChild(exportBtn);
+        }
+    }
+
+    async exportToExcel() {
+        try {
+            console.log('📊 Preparing Excel export...');
+            this.main.logData('Memulai export data kecepatan ke Excel', 'info');
+
+            // Buat workbook baru
+            const wb = XLSX.utils.book_new();
+
+            // Export data per unit
+            this.speedRecords.forEach((records, unitName) => {
+                if (records.length === 0) return;
+
+                const maxSpeed = this.maxSpeedRecords.get(unitName);
+                
+                // Siapkan data untuk sheet
+                const sheetData = [];
+                
+                // Header
+                sheetData.push(['LAPORAN KECEPATAN KENDARAAN']);
+                sheetData.push(['Nama DT:', unitName]);
+                sheetData.push(['Driver:', records[0]?.driver || 'N/A']);
+                sheetData.push(['Afdeling:', records[0]?.afdeling || 'N/A']);
+                sheetData.push(['Kecepatan Maksimal:', maxSpeed.maxSpeed + ' km/h']);
+                sheetData.push(['Waktu Max Speed:', maxSpeed.timestamp ? 
+                    new Date(maxSpeed.timestamp).toLocaleString('id-ID') : 'N/A']);
+                sheetData.push([]); // Empty row
+
+                // Table header
+                sheetData.push([
+                    'No',
+                    'Tanggal',
+                    'Waktu',
+                    'Akumulasi Jarak (km)',
+                    'Kecepatan (km/h)',
+                    'Latitude',
+                    'Longitude'
+                ]);
+
+                // Table data
+                records.forEach((record, index) => {
+                    sheetData.push([
+                        index + 1,
+                        record.dateDisplay,
+                        record.timeDisplay,
+                        record.distance.toFixed(2),
+                        record.speed.toFixed(1),
+                        record.latitude.toFixed(6),
+                        record.longitude.toFixed(6)
+                    ]);
+                });
+
+                // Summary row
+                sheetData.push([]);
+                sheetData.push(['RINGKASAN']);
+                sheetData.push(['Total Records:', records.length]);
+                sheetData.push(['Jarak Total:', records[records.length - 1]?.distance.toFixed(2) + ' km']);
+                sheetData.push(['Kecepatan Rata-rata:', 
+                    (records.reduce((sum, r) => sum + r.speed, 0) / records.length).toFixed(2) + ' km/h']);
+                sheetData.push(['Kecepatan Maksimal:', maxSpeed.maxSpeed + ' km/h']);
+
+                // Buat worksheet
+                const ws = XLSX.utils.aoa_to_sheet(sheetData);
+
+                // Styling (width columns)
+                ws['!cols'] = [
+                    { wch: 6 },  // No
+                    { wch: 12 }, // Tanggal
+                    { wch: 10 }, // Waktu
+                    { wch: 20 }, // Akumulasi Jarak
+                    { wch: 18 }, // Kecepatan
+                    { wch: 12 }, // Latitude
+                    { wch: 12 }  // Longitude
+                ];
+
+                // Tambahkan worksheet ke workbook
+                XLSX.utils.book_append_sheet(wb, ws, unitName);
+            });
+
+            // Buat Summary Sheet untuk semua unit
+            this.createSummarySheet(wb);
+
+            // Generate Excel file
+            const fileName = `Laporan_Kecepatan_${new Date().toISOString().split('T')[0]}.xlsx`;
+            XLSX.writeFile(wb, fileName);
+
+            this.main.logData('Export Excel berhasil', 'success', {
+                fileName: fileName,
+                totalUnits: this.speedRecords.size
+            });
+
+            alert(`✅ Export berhasil!\nFile: ${fileName}\nTotal Unit: ${this.speedRecords.size}`);
+
+        } catch (error) {
+            console.error('❌ Export Excel gagal:', error);
+            this.main.logData('Export Excel gagal', 'error', { error: error.message });
+            alert('❌ Export gagal! Pastikan library SheetJS sudah dimuat.');
+        }
+    }
+
+    createSummarySheet(wb) {
+        const summaryData = [];
+        
+        // Header
+        summaryData.push(['RINGKASAN KECEPATAN SEMUA UNIT']);
+        summaryData.push(['Tanggal:', new Date().toLocaleDateString('id-ID')]);
+        summaryData.push(['Waktu Export:', new Date().toLocaleTimeString('id-ID')]);
+        summaryData.push([]); // Empty row
+
+        // Table header
+        summaryData.push([
+            'No',
+            'Nama DT',
+            'Driver',
+            'Afdeling',
+            'Total Records',
+            'Jarak Total (km)',
+            'Kecepatan Rata-rata (km/h)',
+            'Kecepatan Maksimal (km/h)',
+            'Waktu Max Speed'
+        ]);
+
+        // Table data
+        let no = 1;
+        this.speedRecords.forEach((records, unitName) => {
+            if (records.length === 0) return;
+
+            const maxSpeed = this.maxSpeedRecords.get(unitName);
+            const avgSpeed = records.reduce((sum, r) => sum + r.speed, 0) / records.length;
+            const totalDistance = records[records.length - 1]?.distance || 0;
+
+            summaryData.push([
+                no++,
+                unitName,
+                records[0]?.driver || 'N/A',
+                records[0]?.afdeling || 'N/A',
+                records.length,
+                totalDistance.toFixed(2),
+                avgSpeed.toFixed(2),
+                maxSpeed.maxSpeed.toFixed(1),
+                maxSpeed.timestamp ? new Date(maxSpeed.timestamp).toLocaleTimeString('id-ID') : 'N/A'
+            ]);
+        });
+
+        // Overall summary
+        summaryData.push([]);
+        summaryData.push(['TOTAL UNIT:', this.speedRecords.size]);
+
+        // Buat worksheet
+        const ws = XLSX.utils.aoa_to_sheet(summaryData);
+
+        // Styling
+        ws['!cols'] = [
+            { wch: 6 },  // No
+            { wch: 10 }, // Nama DT
+            { wch: 15 }, // Driver
+            { wch: 12 }, // Afdeling
+            { wch: 15 }, // Total Records
+            { wch: 18 }, // Jarak Total
+            { wch: 20 }, // Kecepatan Rata-rata
+            { wch: 22 }, // Kecepatan Maksimal
+            { wch: 15 }  // Waktu Max Speed
+        ];
+
+        XLSX.utils.book_append_sheet(wb, ws, 'RINGKASAN');
+    }
+
+    // Export untuk unit tertentu saja
+    exportUnitToExcel(unitName) {
+        const records = this.speedRecords.get(unitName);
+        if (!records || records.length === 0) {
+            alert(`Tidak ada data untuk unit ${unitName}`);
+            return;
+        }
+
+        const wb = XLSX.utils.book_new();
+        const maxSpeed = this.maxSpeedRecords.get(unitName);
+        
+        const sheetData = [];
+        
+        // Header
+        sheetData.push(['LAPORAN KECEPATAN KENDARAAN']);
+        sheetData.push(['Nama DT:', unitName]);
+        sheetData.push(['Driver:', records[0]?.driver || 'N/A']);
+        sheetData.push(['Kecepatan Maksimal:', maxSpeed.maxSpeed + ' km/h']);
+        sheetData.push([]);
+
+        // Table
+        sheetData.push(['No', 'Tanggal', 'Waktu', 'Akumulasi Jarak (km)', 'Kecepatan (km/h)']);
+        
+        records.forEach((record, index) => {
+            sheetData.push([
+                index + 1,
+                record.dateDisplay,
+                record.timeDisplay,
+                record.distance.toFixed(2),
+                record.speed.toFixed(1)
+            ]);
+        });
+
+        const ws = XLSX.utils.aoa_to_sheet(sheetData);
+        ws['!cols'] = [
+            { wch: 6 }, { wch: 12 }, { wch: 10 }, { wch: 20 }, { wch: 18 }
+        ];
+
+        XLSX.utils.book_append_sheet(wb, ws, unitName);
+
+        const fileName = `Laporan_Kecepatan_${unitName}_${new Date().toISOString().split('T')[0]}.xlsx`;
+        XLSX.writeFile(wb, fileName);
+
+        alert(`✅ Export berhasil untuk ${unitName}!`);
+    }
+
+    // Method untuk mendapatkan statistik real-time
+    getSpeedStatistics() {
+        const stats = {
+            totalUnits: this.speedRecords.size,
+            totalRecords: 0,
+            overallMaxSpeed: 0,
+            overallMaxSpeedUnit: null,
+            averageMaxSpeed: 0
+        };
+
+        let totalMaxSpeed = 0;
+
+        this.speedRecords.forEach((records, unitName) => {
+            stats.totalRecords += records.length;
+            
+            const maxSpeed = this.maxSpeedRecords.get(unitName);
+            totalMaxSpeed += maxSpeed.maxSpeed;
+
+            if (maxSpeed.maxSpeed > stats.overallMaxSpeed) {
+                stats.overallMaxSpeed = maxSpeed.maxSpeed;
+                stats.overallMaxSpeedUnit = unitName;
+            }
+        });
+
+        stats.averageMaxSpeed = this.speedRecords.size > 0 ? 
+            totalMaxSpeed / this.speedRecords.size : 0;
+
+        return stats;
+    }
+
+    // Cleanup
+    cleanupUnit(unitName) {
+        this.speedRecords.delete(unitName);
+        this.maxSpeedRecords.delete(unitName);
+    }
+
+    clearAll() {
+        this.speedRecords.clear();
+        this.maxSpeedRecords.clear();
+    }
+
+    cleanup() {
+        if (this.recordingInterval) {
+            clearInterval(this.recordingInterval);
+            this.recordingInterval = null;
+        }
+        this.clearAll();
+        console.log('🧹 Speed Analyzer cleaned up');
+    }
+}
+
+// ==== INTEGRASI KE MAIN SYSTEM ====
+// Tambahkan di constructor AdvancedSAGMGpsTracking:
+/*
+this.speedAnalyzer = new SpeedAnalyzer(this);
+*/
+
+// Tambahkan di initializeSystem():
+/*
+{ name: 'Speed Analyzer', instance: this.speedAnalyzer }
+*/
+
+// Tambahkan global function untuk export:
+function exportSpeedData() {
+    if (window.gpsSystem && window.gpsSystem.speedAnalyzer) {
+        window.gpsSystem.speedAnalyzer.exportToExcel();
+    } else {
+        alert('Speed Analyzer belum siap!');
+    }
+}
+
+function exportUnitSpeedData(unitName) {
+    if (window.gpsSystem && window.gpsSystem.speedAnalyzer) {
+        window.gpsSystem.speedAnalyzer.exportUnitToExcel(unitName);
+    } else {
+        alert('Speed Analyzer belum siap!');
+    }
+}
+
+// Tambahkan method untuk menampilkan statistik kecepatan
+function showSpeedStatistics() {
+    if (!window.gpsSystem || !window.gpsSystem.speedAnalyzer) {
+        alert('Speed Analyzer belum siap!');
+        return;
+    }
+
+    const stats = window.gpsSystem.speedAnalyzer.getSpeedStatistics();
+    
+    const statsHTML = `
+        <div class="modal fade" id="speedStatsModal" tabindex="-1">
+            <div class="modal-dialog modal-lg">
+                <div class="modal-content">
+                    <div class="modal-header bg-primary text-white">
+                        <h5 class="modal-title">📊 Statistik Kecepatan</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="row text-center mb-4">
+                            <div class="col-md-3">
+                                <div class="card bg-light">
+                                    <div class="card-body">
+                                        <h3>${stats.totalUnits}</h3>
+                                        <small>Total Unit</small>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col-md-3">
+                                <div class="card bg-light">
+                                    <div class="card-body">
+                                        <h3>${stats.totalRecords.toLocaleString()}</h3>
+                                        <small>Total Records</small>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col-md-3">
+                                <div class="card bg-warning">
+                                    <div class="card-body">
+                                        <h3>${stats.overallMaxSpeed.toFixed(1)}</h3>
+                                        <small>Max Speed (km/h)</small>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col-md-3">
+                                <div class="card bg-info text-white">
+                                    <div class="card-body">
+                                        <h3>${stats.averageMaxSpeed.toFixed(1)}</h3>
+                                        <small>Avg Max Speed</small>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="alert alert-warning">
+                            <strong>🏆 Unit Tercepat:</strong> ${stats.overallMaxSpeedUnit || 'N/A'} 
+                            (${stats.overallMaxSpeed.toFixed(1)} km/h)
+                        </div>
+                        
+                        <button class="btn btn-success w-100" onclick="exportSpeedData()">
+                            📊 Export Semua Data ke Excel
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    `;
+
+    // Remove existing modal if any
+    const existingModal = document.getElementById('speedStatsModal');
+    if (existingModal) existingModal.remove();
+
+    // Add new modal
+    document.body.insertAdjacentHTML('beforeend', statsHTML);
+
+    // Show modal
+    const modal = new bootstrap.Modal(document.getElementById('speedStatsModal'));
+    modal.show();
+}
+
 let gpsSystem;
 
 document.addEventListener('DOMContentLoaded', function() {
