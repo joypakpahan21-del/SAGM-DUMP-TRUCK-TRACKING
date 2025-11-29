@@ -599,85 +599,95 @@
             });
         }
     </script>
-    <!-- ✅ GLOBAL FUNCTIONS - HANYA UNTUK SISTEM CHAT MONITOR -->
+
     <script>
-        // Firebase configuration
-        const firebaseConfig = {
-            apiKey: "AIzaSyBMiER_5b51IEEoxivkCliRC0WID1f-yzk",
-            authDomain: "joi-gps-tracker.firebaseapp.com",
-            databaseURL: "https://joi-gps-tracker-default-rtdb.asia-southeast1.firebasedatabase.app",
-            projectId: "joi-gps-tracker",
-            storageBucket: "joi-gps-tracker.firebasestorage.app",
-            messagingSenderId: "216572191895",
-            appId: "1:216572191895:web:a4fef1794daf200a2775d2"
-        };
-        const app = firebase.initializeApp(firebaseConfig);
-        const database = firebase.database();
+    // ✅ HANYA FUNGSI GLOBAL — TANPA INISIALISASI FIREBASE
+    function toggleMonitorChat() {
+        if (window.gpsSystem) window.gpsSystem.toggleMonitorChat();
+    }
+    function handleMonitorChatInput(event) {
+        if (event.key === 'Enter' && window.gpsSystem) {
+            window.gpsSystem.sendMonitorMessage();
+        }
+    }
+    function sendMonitorMessage() {
+        if (window.gpsSystem) window.gpsSystem.sendMonitorMessage();
+    }
+    function forceCleanup() {
+        if (window.gpsSystem) window.gpsSystem.forceCleanupAllData();
+    }
+    function refreshData() {
+        if (window.gpsSystem) window.gpsSystem.refreshData();
+    }
+    function exportData() {
+        if (window.gpsSystem) window.gpsSystem.downloadRouteData();
+    }
+    function toggleSidebar() {
+        const sidebar = document.querySelector('.sidebar');
+        const body = document.body;
+        if (sidebar) {
+            sidebar.classList.toggle('show');
+            body.classList.toggle('sidebar-open');
+        }
+    }
 
-        // ✅ CHAT FUNCTIONS YANG BENAR
-        function toggleMonitorChat() {
-            if (window.gpsSystem) window.gpsSystem.toggleMonitorChat();
+    // Real-time clock
+    function updateClock() {
+        const now = new Date();
+        const timeElement = document.getElementById('currentTime');
+        if (timeElement) {
+            timeElement.textContent = now.toLocaleTimeString('id-ID');
         }
-        function handleMonitorChatInput(event) {
-            if (event.key === 'Enter' && window.gpsSystem) {
-                window.gpsSystem.sendMonitorMessage();
-            }
-        }
-        function sendMonitorMessage() {
-            if (window.gpsSystem) window.gpsSystem.sendMonitorMessage();
-        }
+    }
+    setInterval(updateClock, 1000);
+    updateClock();
 
-        // ✅ OTHER EXISTING FUNCTIONS
-        function forceCleanup() {
-            if (window.gpsSystem) window.gpsSystem.forceCleanupAllData();
-        }
-        function refreshData() {
-            if (window.gpsSystem) window.gpsSystem.refreshData();
-        }
-        function exportData() {
-            if (window.gpsSystem) window.gpsSystem.downloadRouteData();
-        }
-        function toggleSidebar() {
-            const sidebar = document.querySelector('.sidebar');
-            const body = document.body;
-            if (sidebar) {
-                sidebar.classList.toggle('show');
-                body.classList.toggle('sidebar-open');
-            }
-        }
-
-        // ✅ ENHANCED REAL-TIME CLOCK
-        function updateClock() {
-            const now = new Date();
-            const timeElement = document.getElementById('currentTime');
-            if (timeElement) {
-                timeElement.textContent = now.toLocaleTimeString('id-ID');
-            }
-        }
-        setInterval(updateClock, 1000);
-        updateClock();
-
-        // ✅ INITIALIZE SYSTEM
-        document.addEventListener('DOMContentLoaded', function() {
-            if (window.gpsSystem) {
-                console.log('🧹 Cleaning up existing system');
-                window.gpsSystem.cleanup();
-            }
-            try {
-                window.gpsSystem = new AdvancedSAGMGpsTracking();
-                console.log('✅ Advanced Monitor System initialized');
-            } catch (error) {
-                console.error('❌ Failed to initialize monitor system:', error);
-                alert('Gagal memulai sistem monitor. Cek konsol untuk detail error.');
-            }
+    // Service Worker
+    if ('serviceWorker' in navigator) {
+        window.addEventListener('load', function() {
+            navigator.serviceWorker.register('/service-worker.js')
+                .then(function(registration) {
+                    console.log('✅ ServiceWorker registered');
+                    if (registration.active) {
+                        registration.active.postMessage({
+                            type: 'CONTEXT_IDENTIFICATION',
+                            context: 'monitor'
+                        });
+                    }
+                })
+                .catch(function(error) {
+                    console.log('❌ ServiceWorker registration failed:', error);
+                });
+            navigator.serviceWorker.addEventListener('message', event => {
+                const { type, data } = event.data;
+                if (type === 'OFFLINE_POSITIONS_READY' && window.gpsSystem) {
+                    window.gpsSystem.processOfflinePositions(data);
+                }
+            });
         });
+    }
 
-        // Cleanup on page unload
-        window.addEventListener('beforeunload', function() {
-            if (window.gpsSystem) {
-                window.gpsSystem.cleanup();
-            }
-        });
-    </script>
+    // Inisialisasi sistem
+    document.addEventListener('DOMContentLoaded', function() {
+        if (window.gpsSystem) {
+            console.log('🧹 Cleaning up existing system');
+            window.gpsSystem.cleanup();
+        }
+        try {
+            window.gpsSystem = new AdvancedSAGMGpsTracking();
+            console.log('✅ Advanced Monitor System initialized');
+        } catch (error) {
+            console.error('❌ Failed to initialize monitor system:', error);
+            alert('Gagal memulai sistem monitor. Cek konsol untuk detail error.');
+        }
+    });
+
+    window.addEventListener('beforeunload', function() {
+        if (window.gpsSystem) {
+            window.gpsSystem.cleanup();
+        }
+    });
+</script>
+    
 </body>
 </html>
