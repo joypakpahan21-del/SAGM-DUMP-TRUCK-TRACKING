@@ -2338,60 +2338,22 @@ class AnalyticsEngine {
     // ✅ FIX: Perbaiki method processUnitData
     processUnitData(unit) {
         try {
-            const analytics = this.calculateUnitAnalytics(unit);
-            this.unitAnalytics.set(unit.name, analytics);
-            unit.analytics = { ...unit.analytics, ...analytics };
             
-            this.updateUnitScore(unit);
-            
-        } catch (error) {
-            console.error(`Error processing analytics for ${unit.name}:`, error);
-            this.main.logData(`Analytics error for ${unit.name}`, 'error', {
-                unit: unit.name,
-                error: error.message
-            });
-        }
-    }
-
-    calculateSpeedEfficiency(speed) {
-        const optimalSpeed = this.main.vehicleConfig.optimalSpeed;
-        const maxSpeed = this.main.vehicleConfig.maxSpeed;
+             console.log(`Processing unit: ${unit.name}`);
         
-        if (speed <= 0) return 0;
-        if (speed <= optimalSpeed) return (speed / optimalSpeed) * 100;
-        
-        // Penalty for speeding
-        const overspeed = speed - optimalSpeed;
-        const maxOverspeed = maxSpeed - optimalSpeed;
-        const penalty = (overspeed / maxOverspeed) * 50; // Max 50% penalty
-        
-        return Math.max(0, 100 - penalty);
+    } catch (error) {
+        console.error(`Error processing analytics for ${unit.name}:`, error);
+        this.main.logData(`Analytics error for ${unit.name}`, 'error', {
+            unit: unit.name,
+            error: error.message
+        });
     }
+}
 
-    calculateDistanceEfficiency(distance) {
-        const target = this.main.vehicleConfig.dailyDistanceTarget;
-        return Math.min(100, (distance / target) * 100);
-    }
-
-    calculateViolationPenalty(unit) {
-        const violations = unit.analytics.violations || [];
-        return violations.length * 10; // 10 points penalty per violation
-    }
-
-    updateUnitScore(unit) {
-        const analytics = this.unitAnalytics.get(unit.name);
-        if (analytics) {
-            unit.analytics.performanceScore = analytics.performanceScore;
-            unit.analytics.efficiency = analytics.efficiency;
-        }
-    }
 
     initializeUnit(unit) {
         this.unitAnalytics.set(unit.name, {
             performanceScore: 75,
-            efficiency: 0,
-            speedEfficiency: 0,
-            distanceEfficiency: 0,
             lastUpdate: Date.now()
         });
     }
@@ -2471,42 +2433,6 @@ class AnalyticsEngine {
 
             const modalBodyContent = `
                 <div class="row">
-                    <div class="col-md-6">
-                        <h5>📊 Analytics Detail - ${unitName}</h5>
-                        <div class="card mb-3">
-                            <div class="card-body">
-                                <div class="row text-center">
-                                    <div class="col-6">
-                                        <div class="h2 text-${this.main.getScoreClass(analytics.performanceScore)}">
-                                            ${analytics.performanceScore || 0}
-                                        </div>
-                                        <small>Overall Score</small>
-                                    </div>
-                                    <div class="col-6">
-                                        <div class="h4 text-success">${analytics.efficiency || 0}%</div>
-                                        <small>Efficiency</small>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                        
-                        <h6>📈 Metrik Detail</h6>
-                        <div class="list-group">
-                            <div class="list-group-item d-flex justify-content-between">
-                                <span>Kecepatan:</span>
-                                <span>${unit.speed} km/h</span>
-                            </div>
-                            <div class="list-group-item d-flex justify-content-between">
-                                <span>Efisiensi Kecepatan:</span>
-                                <span>${analytics.speedEfficiency || 0}%</span>
-                            </div>
-                            <div class="list-group-item d-flex justify-content-between">
-                                <span>Jarak Tempuh:</span>
-                                <span>${unit.distance.toFixed(1)} km</span>
-                            </div>
-                        </div>
-                    </div>
-                    
                     <div class="col-md-6">
                         <h6>⚠️ Pelanggaran</h6>
                         <div id="unitViolationsList">
@@ -2651,32 +2577,30 @@ class AnalyticsEngine {
         `;
     }
 
-    // ✅ FIX: Fallback sederhana jika modal tidak bisa ditampilkan
-    showFallbackAnalytics(unitName, unit, analytics) {
-        const fallbackHTML = `
-            <div class="alert alert-info position-fixed top-0 start-50 translate-middle-x mt-3" style="z-index: 9999; min-width: 300px;">
-                <div class="d-flex justify-content-between align-items-start">
-                    <div>
-                        <h6>📊 ${unitName} Analytics</h6>
-                        <div class="small">
-                            Score: ${analytics.performanceScore || 0}<br>
-                            Efficiency: ${analytics.efficiency || 0}%<br>
-                            Speed: ${unit.speed} km/h
-                        </div>
+    
+    showFallbackAnalytics(unitName, unit) {
+    const fallbackHTML = `
+        <div class="alert alert-info position-fixed top-0 start-50 translate-middle-x mt-3" style="z-index: 9999; min-width: 300px;">
+            <div class="d-flex justify-content-between align-items-start">
+                <div>
+                    <h6>📊 ${unitName} Analytics</h6>
+                    <div class="small">
+                        Speed: ${unit.speed} km/h<br>
+                        Distance: ${unit.distance.toFixed(1)} km
                     </div>
-                    <button type="button" class="btn-close btn-sm" onclick="this.parentElement.parentElement.remove()"></button>
                 </div>
+                <button type="button" class="btn-close btn-sm" onclick="this.parentElement.parentElement.remove()"></button>
             </div>
-        `;
-        
-        document.body.insertAdjacentHTML('beforeend', fallbackHTML);
-        
-        // Auto remove after 5 seconds
-        setTimeout(() => {
-            const alert = document.querySelector('.alert-info');
-            if (alert) alert.remove();
-        }, 5000);
-    }
+        </div>
+    `;
+    
+    document.body.insertAdjacentHTML('beforeend', fallbackHTML);
+    
+    setTimeout(() => {
+        const alert = document.querySelector('.alert-info');
+        if (alert) alert.remove();
+    }, 5000);
+}
 
     renderUnitViolations(unit) {
         const violations = unit.analytics.violations || [];
@@ -2721,11 +2645,7 @@ class AnalyticsEngine {
 
     generateRecommendations(unit) {
         const recommendations = [];
-        const analytics = this.unitAnalytics.get(unit.name) || {};
-
-        if (analytics.speedEfficiency < 70) {
-            recommendations.push('🚗 Pertahankan kecepatan optimal (40 km/h)');
-        }
+        
         if (recommendations.length === 0) {
             return '<div class="alert alert-success">✅ Performa sudah optimal</div>';
         }
