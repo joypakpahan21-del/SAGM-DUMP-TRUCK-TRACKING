@@ -15,6 +15,8 @@
     <!-- Firebase SDK -->
     <script src="https://www.gstatic.com/firebasejs/9.6.0/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.6.0/firebase-database-compat.js"></script>
+    <!-- Tambahkan library untuk Excel export -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
     <!-- External CSS -->
     <link href="style-monitor.css" rel="stylesheet">
     <!-- Enhanced Chat CSS -->
@@ -378,6 +380,48 @@
                             </div>
                         </div>
                     </div>
+                    <!-- TAMBAHKAN CARD SPEED ANALYTICS DI SINI -->
+                    <div class="col-xl-3 col-md-6">
+                        <div class="card">
+                            <div class="card-header bg-success text-white">
+                                <h6 class="mb-0">🚀 Speed Analytics</h6>
+                            </div>
+                            <div class="card-body">
+                                <div class="text-center mb-3">
+                                    <h2 id="maxSpeedDisplay">0</h2>
+                                    <small class="text-muted">Kecepatan Maksimal (km/h)</small>
+                                </div>
+                                <div class="d-grid gap-2">
+                                    <button class="btn btn-primary btn-sm" onclick="showSpeedStatistics()">
+                                        📊 Lihat Detail
+                                    </button>
+                                    <button class="btn btn-success btn-sm" onclick="exportSpeedData()">
+                                        📥 Export Excel
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="dashboard-toolbar d-flex justify-content-between align-items-center mb-3">
+                    <h5>📊 GPS Analytics Dashboard</h5>
+                    <div class="btn-group">
+                        <button class="btn btn-primary btn-sm" onclick="refreshData()">
+                            🔄 Refresh
+                        </button>
+                        <button class="btn btn-info btn-sm" onclick="exportData()">
+                            📥 Export Data
+                        </button>
+                        <button class="btn btn-success btn-sm" onclick="showSpeedStatistics()">
+                            📊 Speed Analytics
+                        </button>
+                        <button class="btn btn-warning btn-sm" onclick="exportSpeedData()">
+                            📊 Export Speed (Excel)
+                        </button>
+                    </div>
+                </div>
+
                 <!-- Map Container -->
                 <div class="card">
                     <div class="card-header bg-light d-flex justify-content-between align-items-center">
@@ -499,7 +543,7 @@
                                 <div class="spinner-border spinner-border-sm text-success me-2"></div>
                                 Memuat data logger...
                             </div>
-                        </div>
+</div>
                     </div>
                 </div>
             </div>
@@ -677,6 +721,7 @@
         }
     });
 </script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
     
 </body>
 </html>
