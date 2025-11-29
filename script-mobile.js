@@ -11400,7 +11400,7 @@ getRealTimeData = () => {
         journeyStatus: this.journeyStatus,
         batteryLevel: this.getBatteryLevel(),
         sessionId: this.driverData?.sessionId,
-        fuel: this.calculateFuelLevel(),
+        
         gpsMode: 'real-time-enhanced',
         processed: true,
         confidence: this.lastPosition.confidence || 0.5,
@@ -11518,10 +11518,7 @@ uploadBatch = async (batch, batchIndex) => {
         return Math.max(0.2, Math.min(1, Math.random() * 0.8 + 0.2));
     }
 
-    calculateFuelLevel() {
-        // Simulate fuel level
-        return Math.max(0.1, Math.min(1, Math.random() * 0.9 + 0.1));
-    }
+    
 
     updateAllDisplays() {
         this.updateTime();
