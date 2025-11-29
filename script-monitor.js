@@ -1,4 +1,4 @@
-// ==== FIREBASE CONFIG ====
+
 const FIREBASE_CONFIG = {
     apiKey: "AIzaSyBMiER_5b51IEEoxivkCliRC0WID1f-yzk",
     authDomain: "joi-gps-tracker.firebaseapp.com",
@@ -9,9 +9,11 @@ const FIREBASE_CONFIG = {
     appId: "1:216572191895:web:a4fef1794daf200a2775d2"
 };
 
-// Initialize Firebase
-firebase.initializeApp(FIREBASE_CONFIG);
+if (!firebase.apps.length) {
+    firebase.initializeApp(FIREBASE_CONFIG);
+}
 const database = firebase.database();
+const filters = ['searchUnit', 'filterAfdeling', 'filterStatus'];
 
 function calculateDistance(lat1, lng1, lat2, lng2) {
     const R = 6371; // Earth's radius in km
@@ -1622,12 +1624,12 @@ setupEscapeKeyClose() {
         this.firebaseListeners.clear();
     }
 
-    setupEventHandlers() {
+     setupEventHandlers() {
         const searchInput = document.getElementById('searchUnit');
         if (searchInput) {
             searchInput.addEventListener('input', (e) => this.applyFilters());
         }
-        filters.forEach(filterId => {
+       filters.forEach(filterId => {
             const filter = document.getElementById(filterId);
             if (filter) {
                 filter.addEventListener('change', () => this.applyFilters());
