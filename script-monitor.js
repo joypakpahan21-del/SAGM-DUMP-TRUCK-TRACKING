@@ -39,7 +39,6 @@ class AdvancedSAGMGpsTracking {
         this.analyticsEngine = new AnalyticsEngine(this);
         this.geofencingManager = new GeofencingManager(this);
         this.violationDetector = new ViolationDetector(this);
-        this.fuelMonitor = new FuelMonitor(this);
         this.performanceManager = new PerformanceManager(this);
         this.heatmapManager = new HeatmapManager(this);
         this.maintenancePredictor = new MaintenancePredictor(this);
@@ -66,7 +65,6 @@ class AdvancedSAGMGpsTracking {
         this.activeUnits = 0;
         this.totalDistance = 0;
         this.avgSpeed = 0;
-        this.totalFuelConsumption = 0;
         this.avgPerformanceScore = 0;
         this.totalViolations = 0;
         this.lastUpdate = new Date();
@@ -95,14 +93,9 @@ class AdvancedSAGMGpsTracking {
             }
         };
         this.vehicleConfig = {
-            fuelEfficiency: 4.5,
             maxSpeed: 80,
             optimalSpeed: 40,
-            fuelTankCapacity: 100,
-            baseFuelConsumption: 0.25,
-            movingFuelConsumption: 0.22,
-            idleFuelConsumptionPerMin: 0.013,
-            dailyDistanceTarget: 1000,
+            dailyDistanceTarget: 95,
             maxIdleTime: 30,
             maintenanceIntervals: {
                 oilChange: 2500,
@@ -189,7 +182,6 @@ class AdvancedSAGMGpsTracking {
                 { name: 'Analytics Engine', instance: this.analyticsEngine },
                 { name: 'Geofencing Manager', instance: this.geofencingManager },
                 { name: 'Violation Detector', instance: this.violationDetector },
-                { name: 'Fuel Monitor', instance: this.fuelMonitor },
                 { name: 'Performance Manager', instance: this.performanceManager },
                 { name: 'Heatmap Manager', instance: this.heatmapManager },
                 { name: 'Maintenance Predictor', instance: this.maintenancePredictor },
@@ -206,7 +198,7 @@ class AdvancedSAGMGpsTracking {
                     this.logData(`${system.name} gagal diinisialisasi`, 'warning', { error: error.message });
                 }
             });
-            // ✅ HANYA SETUP CHAT MONITOR
+        
             this.setupMonitorChatSystem();
             this.setupChatWindowBehavior();
             setTimeout(() => this.showDebugPanel(), 2000);
@@ -810,7 +802,6 @@ setupEscapeKeyClose() {
                 this.refreshUnitData(existingUnit, unitData);
                 this.analyticsEngine.processUnitData(existingUnit);
                 this.violationDetector.checkViolations(existingUnit);
-                this.fuelMonitor.monitorFuelUsage(existingUnit);
                 this.geofencingManager.checkUnitZones(existingUnit);
             } else {
                 const newUnit = this.createNewUnit(unitName, unitData);
@@ -890,8 +881,6 @@ setupEscapeKeyClose() {
                 speed: parseFloat(validatedData.speed) || 0,
                 lastUpdate: validatedData.lastUpdate || new Date().toLocaleTimeString('id-ID'),
                 distance: parseFloat(validatedData.distance) || 0,
-                fuelLevel: this.computeFuelLevel(100, validatedData.distance, validatedData.journeyStatus),
-                fuelUsed: this.computeFuelUsage(validatedData.distance, validatedData.journeyStatus),
                 driver: validatedData.driver || 'Unknown',
                 accuracy: parseFloat(validatedData.accuracy) || 0,
                 batteryLevel: validatedData.batteryLevel || null,
@@ -899,14 +888,12 @@ setupEscapeKeyClose() {
                 lastLng: parseFloat(validatedData.lng),
                 isOnline: true,
                 sessionId: validatedData.sessionId,
-                lastFuelUpdate: Date.now(),
                 analytics: {
                     performanceScore: 75,
                     efficiency: 0,
                     violations: [],
                     dailyDistance: 0,
                     idleTime: 0,
-                    fuelEfficiency: 0,
                     lastScoreUpdate: Date.now(),
                     zoneEntries: [],
                     maintenanceAlerts: []
@@ -993,11 +980,9 @@ setupEscapeKeyClose() {
         unit.driver = firebaseData.driver || unit.driver;
         unit.accuracy = parseFloat(firebaseData.accuracy) || unit.accuracy;
         unit.batteryLevel = firebaseData.batteryLevel || unit.batteryLevel;
-        unit.fuelLevel = this.computeFuelLevel(100, unit.distance, unit.status);
         unit.lastLat = parseFloat(firebaseData.lat);
         unit.lastLng = parseFloat(firebaseData.lng);
         unit.isOnline = true;
-        unit.lastFuelUpdate = now;
         this.addHistoryPoint(unit);
     }
 
@@ -1017,7 +1002,6 @@ setupEscapeKeyClose() {
         let activeUnits = 0;
         let totalDistance = 0;
         let totalSpeed = 0;
-        let totalFuel = 0;
         let unitCount = 0;
         let totalScore = 0;
         let totalViolations = 0;
@@ -1029,7 +1013,6 @@ setupEscapeKeyClose() {
                 }
                 totalDistance += unit.distance || 0;
                 totalSpeed += unit.speed || 0;
-                totalFuel += unit.fuelUsed || 0;
                 totalScore += unit.analytics.performanceScore || 0;
                 totalViolations += unit.analytics.violations?.length || 0;
             }
@@ -1039,7 +1022,6 @@ setupEscapeKeyClose() {
         this.activeUnits = activeUnits;
         this.totalDistance = totalDistance;
         this.avgSpeed = avgSpeed;
-        this.totalFuelConsumption = totalFuel;
         this.avgPerformanceScore = Math.round(avgScore);
         this.totalViolations = totalViolations;
         this.updateDisplayElements();
@@ -1053,11 +1035,9 @@ setupEscapeKeyClose() {
         updateElement('activeUnits', `${this.activeUnits}/${this.units.size}`);
         updateElement('totalDistance', `${this.totalDistance.toFixed(1)} km`);
         updateElement('avgSpeed', `${this.avgSpeed.toFixed(1)} km/h`);
-        updateElement('totalFuel', `${this.totalFuelConsumption.toFixed(1)} L`);
         updateElement('avgScore', `${this.avgPerformanceScore}`);
         updateElement('totalViolations', `${this.totalViolations}`);
         updateElement('quickTotalDistance', `${this.totalDistance.toFixed(0)} km`);
-        updateElement('quickTotalFuel', `${this.totalFuelConsumption.toFixed(0)} L`);
         updateElement('quickViolations', `${this.totalViolations}`);
         updateElement('quickEfficiency', `${this.avgPerformanceScore}%`);
         updateElement('averageScore', this.avgPerformanceScore);
@@ -1069,7 +1049,6 @@ setupEscapeKeyClose() {
         this.analyticsEngine.updateDashboard();
         this.performanceManager.updateRankings();
         this.violationDetector.updateViolationsDisplay();
-        this.fuelMonitor.updateFuelDisplay();
         this.maintenancePredictor.updateMaintenanceDisplay();
     }
 
@@ -1140,7 +1119,6 @@ setupEscapeKeyClose() {
                 <div class="mt-2">
                     <small class="text-muted">
                         Kecepatan: ${unit.speed} km/h | Jarak: ${unit.distance.toFixed(1)} km<br>
-                        Bahan Bakar: ${unit.fuelLevel}% | Efisiensi: ${unit.analytics.efficiency || 0}%<br>
                         Update: ${unit.lastUpdate}
                     </small>
                 </div>
@@ -1288,7 +1266,6 @@ setupEscapeKeyClose() {
             speed: unit.speed,
             distance: unit.distance,
             status: unit.status,
-            fuelLevel: unit.fuelLevel
         };
         history.push(point);
         this.updateUnitRoute(unit);
@@ -1513,10 +1490,6 @@ setupEscapeKeyClose() {
                         <span class="info-value">${unit.distance.toFixed(2)} km</span>
                     </div>
                     <div class="info-item">
-                        <span class="info-label">Bahan Bakar:</span>
-                        <span class="info-value">${unit.fuelLevel.toFixed(1)}%</span>
-                    </div>
-                    <div class="info-item">
                         <span class="info-label">Efisiensi:</span>
                         <span class="info-value">${efficiency}%</span>
                     </div>
@@ -1539,34 +1512,6 @@ setupEscapeKeyClose() {
         this.analyticsEngine.showUnitAnalytics(unitName);
     }
 
-    computeFuelConsumption(distance, status) {
-        let rate;
-        switch(status) {
-            case 'moving': rate = this.vehicleConfig.movingFuelConsumption; break;
-            case 'active': rate = this.vehicleConfig.baseFuelConsumption; break;
-            default: rate = this.vehicleConfig.baseFuelConsumption * 0.5;
-        }
-        return distance * rate;
-    }
-
-    computeFuelUsage(distance, status) {
-        if (!distance) return 0;
-        let rate;
-        switch(status) {
-            case 'moving': rate = this.vehicleConfig.movingFuelConsumption; break;
-            case 'active': rate = this.vehicleConfig.baseFuelConsumption; break;
-            default: rate = this.vehicleConfig.baseFuelConsumption * 0.5;
-        }
-        return distance * rate;
-    }
-
-    computeFuelLevel(initialFuel, distance, status) {
-        if (!distance) return initialFuel;
-        const fuelUsed = this.computeFuelUsage(distance, status);
-        const fuelRemaining = Math.max(0, initialFuel - fuelUsed);
-        const fuelPercentage = (fuelRemaining / this.vehicleConfig.fuelTankCapacity) * 100;
-        return Math.max(5, Math.min(100, fuelPercentage));
-    }
 
     gradualCleanupInactiveUnits(activeUnits) {
         const now = Date.now();
@@ -1633,7 +1578,6 @@ setupEscapeKeyClose() {
     this.cleanupUnitChatListener(unitName);
     this.analyticsEngine.cleanupUnit(unitName);
     this.violationDetector.cleanupUnit(unitName);
-    this.fuelMonitor.cleanupUnit(unitName);
     this.performanceManager.cleanupUnit(unitName);
     this.maintenancePredictor.cleanupUnit(unitName);
     
@@ -1683,7 +1627,6 @@ setupEscapeKeyClose() {
         if (searchInput) {
             searchInput.addEventListener('input', (e) => this.applyFilters());
         }
-        const filters = ['filterAfdeling', 'filterStatus', 'filterFuel'];
         filters.forEach(filterId => {
             const filter = document.getElementById(filterId);
             if (filter) {
@@ -1708,11 +1651,10 @@ setupEscapeKeyClose() {
         }
     }
 
-    applyFilters() {
+    applyFilters  () {
         const searchTerm = document.getElementById('searchUnit')?.value.toLowerCase() || '';
         const afdelingFilter = document.getElementById('filterAfdeling')?.value || '';
         const statusFilter = document.getElementById('filterStatus')?.value || '';
-        const fuelFilter = document.getElementById('filterFuel')?.value || '';
     }
 
     startPeriodicTasks() {
@@ -1838,7 +1780,6 @@ setupEscapeKeyClose() {
         this.activeUnits = 0;
         this.totalDistance = 0;
         this.avgSpeed = 0;
-        this.totalFuelConsumption = 0;
         this.avgPerformanceScore = 0;
         this.totalViolations = 0;
         this.activeChatUnit = null;
@@ -1846,7 +1787,6 @@ setupEscapeKeyClose() {
         this.analyticsEngine.clearAll();
         this.geofencingManager.clearAll();
         this.violationDetector.clearAll();
-        this.fuelMonitor.clearAll();
         this.performanceManager.clearAll();
         this.heatmapManager.clearAll();
         this.maintenancePredictor.clearAll();
@@ -2007,7 +1947,6 @@ setupEscapeKeyClose() {
                 'Real-time Analytics',
                 'Performance Scoring', 
                 'Violation Detection',
-                'Fuel Monitoring',
                 'Geofencing',
                 'Maintenance Prediction',
                 'Heatmap Visualization',
@@ -2175,7 +2114,6 @@ setupEscapeKeyClose() {
         this.analyticsEngine.cleanup();
         this.geofencingManager.cleanup();
         this.violationDetector.cleanup();
-        this.fuelMonitor.cleanup();
         this.performanceManager.cleanup();
         this.heatmapManager.cleanup();
         this.maintenancePredictor.cleanup();
@@ -2355,7 +2293,6 @@ class AnalyticsEngine {
             bestUnit: '',
             systemEfficiency: 0,
             totalViolations: 0,
-            fuelEfficiency: 0
         };
         
         // ✅ FIX: Inisialisasi interval tracking
@@ -2414,25 +2351,6 @@ class AnalyticsEngine {
         }
     }
 
-    calculateUnitAnalytics(unit) {
-        const speedEfficiency = this.calculateSpeedEfficiency(unit.speed);
-        const distanceEfficiency = this.calculateDistanceEfficiency(unit.distance);
-        const fuelEfficiency = this.calculateFuelEfficiency(unit);
-        const violationPenalty = this.calculateViolationPenalty(unit);
-        
-        const baseScore = (speedEfficiency + distanceEfficiency + fuelEfficiency) / 3;
-        const finalScore = Math.max(0, Math.min(100, baseScore - violationPenalty));
-        
-        return {
-            performanceScore: Math.round(finalScore),
-            efficiency: Math.round((speedEfficiency + fuelEfficiency) / 2),
-            speedEfficiency: Math.round(speedEfficiency),
-            distanceEfficiency: Math.round(distanceEfficiency),
-            fuelEfficiency: Math.round(fuelEfficiency),
-            lastUpdate: Date.now()
-        };
-    }
-
     calculateSpeedEfficiency(speed) {
         const optimalSpeed = this.main.vehicleConfig.optimalSpeed;
         const maxSpeed = this.main.vehicleConfig.maxSpeed;
@@ -2451,14 +2369,6 @@ class AnalyticsEngine {
     calculateDistanceEfficiency(distance) {
         const target = this.main.vehicleConfig.dailyDistanceTarget;
         return Math.min(100, (distance / target) * 100);
-    }
-
-    calculateFuelEfficiency(unit) {
-        if (!unit.fuelUsed || unit.fuelUsed <= 0) return 100;
-        
-        const expectedFuel = unit.distance * this.main.vehicleConfig.movingFuelConsumption;
-        const efficiency = (expectedFuel / unit.fuelUsed) * 100;
-        return Math.min(100, efficiency);
     }
 
     calculateViolationPenalty(unit) {
@@ -2480,7 +2390,6 @@ class AnalyticsEngine {
             efficiency: 0,
             speedEfficiency: 0,
             distanceEfficiency: 0,
-            fuelEfficiency: 0,
             lastUpdate: Date.now()
         });
     }
@@ -2551,7 +2460,6 @@ class AnalyticsEngine {
                     performanceScore: analytics.performanceScore || 0,
                     efficiency: analytics.efficiency || 0,
                     speedEfficiency: analytics.speedEfficiency || 0,
-                    fuelEfficiency: analytics.fuelEfficiency || 0
                 });
                 
                 // Atau buat modal secara dinamis
@@ -2593,10 +2501,6 @@ class AnalyticsEngine {
                             <div class="list-group-item d-flex justify-content-between">
                                 <span>Jarak Tempuh:</span>
                                 <span>${unit.distance.toFixed(1)} km</span>
-                            </div>
-                            <div class="list-group-item d-flex justify-content-between">
-                                <span>Efisiensi Bahan Bakar:</span>
-                                <span>${analytics.fuelEfficiency || 0}%</span>
                             </div>
                         </div>
                     </div>
@@ -2722,10 +2626,6 @@ class AnalyticsEngine {
                             <span>Jarak Tempuh:</span>
                             <span>${unit.distance.toFixed(1)} km</span>
                         </div>
-                        <div class="list-group-item d-flex justify-content-between">
-                            <span>Efisiensi Bahan Bakar:</span>
-                            <span>${analytics.fuelEfficiency || 0}%</span>
-                        </div>
                     </div>
                 </div>
                 
@@ -2824,15 +2724,6 @@ class AnalyticsEngine {
         if (analytics.speedEfficiency < 70) {
             recommendations.push('🚗 Pertahankan kecepatan optimal (40 km/h)');
         }
-
-        if (analytics.fuelEfficiency < 80) {
-            recommendations.push('⛽ Monitor konsumsi bahan bakar lebih ketat');
-        }
-
-        if (unit.analytics.violations?.length > 0) {
-            recommendations.push('⚠️ Kurangi pelanggaran untuk meningkatkan skor');
-        }
-
         if (recommendations.length === 0) {
             return '<div class="alert alert-success">✅ Performa sudah optimal</div>';
         }
@@ -2847,7 +2738,6 @@ class AnalyticsEngine {
     setupCharts() {
         this.setupPerformanceChart();
         this.setupViolationsChart();
-        this.setupFuelChart();
         this.setupMaintenanceChart();
         this.setupZonesChart();
     }
@@ -2898,23 +2788,6 @@ class AnalyticsEngine {
                 datasets: [{
                     data: [0, 0, 0, 0],
                     backgroundColor: ['#ff6b6b', '#ffd93d', '#6bcf7f', '#4d96ff']
-                }]
-            }
-        }));
-    }
-
-    setupFuelChart() {
-        const ctx = document.getElementById('fuelChart')?.getContext('2d');
-        if (!ctx) return;
-
-        this.charts.set('fuel', new Chart(ctx, {
-            type: 'bar',
-            data: {
-                labels: [],
-                datasets: [{
-                    label: 'Konsumsi Bahan Bakar (L)',
-                    data: [],
-                    backgroundColor: '#17a2b8'
                 }]
             }
         }));
@@ -2977,7 +2850,7 @@ class AnalyticsEngine {
     updateAllCharts() {
         this.updatePerformanceChart();
         this.updateViolationsChart();
-        this.updateFuelChart();
+        
     }
 
     updatePerformanceChart() {
@@ -2995,55 +2868,23 @@ class AnalyticsEngine {
         const chart = this.charts.get('violations');
         if (!chart) return;
 
-        let speeding = 0, idle = 0, fuel = 0, zone = 0;
+        let speeding = 0, idle = 0, zone = 0;
 
         this.main.units.forEach(unit => {
             unit.analytics.violations?.forEach(violation => {
                 switch(violation.type) {
                     case 'SPEEDING': speeding++; break;
                     case 'EXCESSIVE_IDLE': idle++; break;
-                    case 'FUEL_ANOMALY': fuel++; break;
                     case 'ZONE_VIOLATION': zone++; break;
                 }
             });
         });
 
-        chart.data.datasets[0].data = [speeding, idle, fuel, zone];
+        chart.data.datasets[0].data = [speeding, idle, zone];
         chart.update();
     }
 
-    updateFuelChart() {
-        const chart = this.charts.get('fuel');
-        if (!chart) return;
-
-        const units = Array.from(this.main.units.values()).slice(0, 5);
-        chart.data.labels = units.map(u => u.name);
-        chart.data.datasets[0].data = units.map(u => u.fuelUsed || 0);
-        chart.update();
-    }
-
-    exportAnalyticsData() {
-        const exportData = {
-            exportedAt: new Date().toISOString(),
-            analytics: this.dashboardData,
-            unitAnalytics: Object.fromEntries(this.unitAnalytics),
-            charts: {
-                performance: this.charts.get('performance')?.data,
-                violations: this.charts.get('violations')?.data,
-                fuel: this.charts.get('fuel')?.data
-            }
-        };
-
-        const dataStr = JSON.stringify(exportData, null, 2);
-        const dataBlob = new Blob([dataStr], {type: 'application/json'});
-        const url = URL.createObjectURL(dataBlob);
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = `analytics-data-${new Date().toISOString().split('T')[0]}.json`;
-        link.click();
-        
-        this.main.logData('Analytics data exported', 'success');
-    }
+    
 
     cleanupUnit(unitName) {
         this.unitAnalytics.delete(unitName);
@@ -3384,7 +3225,7 @@ class ViolationDetector {
         this.monitoringInterval = null; // ✅ FIX: Tambahkan properti
         this.violationTypes = {
             SPEEDING: {
-                threshold: 80,
+                threshold: 60,
                 message: 'Kecepatan berlebihan',
                 penalty: 15
             },
@@ -3392,11 +3233,7 @@ class ViolationDetector {
                 threshold: 30, // minutes
                 message: 'Idle terlalu lama',
                 penalty: 10
-            },
-            FUEL_ANOMALY: {
-                threshold: 1.2, // 20% more than expected
-                message: 'Konsumsi bahan bakar tidak normal',
-                penalty: 20
+            
             },
             ZONE_VIOLATION: {
                 message: 'Pelanggaran zona operasional',
@@ -3438,11 +3275,6 @@ class ViolationDetector {
             violations.push(this.createViolation('EXCESSIVE_IDLE', unit));
         }
         
-        // Check fuel anomalies
-        if (this.detectFuelAnomaly(unit)) {
-            violations.push(this.createViolation('FUEL_ANOMALY', unit));
-        }
-        
         // Update unit violations
         if (violations.length > 0) {
             unit.analytics.violations = violations;
@@ -3468,8 +3300,6 @@ class ViolationDetector {
                 return `Kecepatan: ${unit.speed} km/h (Maks: ${this.violationTypes.SPEEDING.threshold} km/h)`;
             case 'EXCESSIVE_IDLE':
                 return `Idle time: ${this.calculateIdleTime(unit)} menit`;
-            case 'FUEL_ANOMALY':
-                return `Konsumsi bahan bakar di atas normal`;
             default:
                 return 'Pelanggaran terdeteksi';
         }
@@ -3480,14 +3310,7 @@ class ViolationDetector {
         return unit.speed === 0 ? 5 : 0; // Placeholder
     }
 
-    detectFuelAnomaly(unit) {
-        if (!unit.fuelUsed || unit.fuelUsed <= 0) return false;
-        
-        const expectedFuel = unit.distance * this.main.vehicleConfig.movingFuelConsumption;
-        const ratio = unit.fuelUsed / expectedFuel;
-        
-        return ratio > this.violationTypes.FUEL_ANOMALY.threshold;
-    }
+    
 
     logViolations(unit, violations) {
         violations.forEach(violation => {
@@ -3558,138 +3381,6 @@ class ViolationDetector {
     }
 }
 
-// ==== FUEL MONITOR ====
-class FuelMonitor {
-    constructor(mainSystem) {
-        this.main = mainSystem;
-        this.fuelData = new Map();
-        this.anomalies = new Map();
-        this.monitoringInterval = null; // ✅ FIX: Tambahkan properti
-    }
-
-    initialize() {
-        console.log('⛽ Fuel Monitor initialized');
-        this.startFuelMonitoring();
-    }
-
-    // ✅ FIX: Tambahkan properti interval
-    startFuelMonitoring() {
-        console.log('🔄 Starting fuel monitoring...');
-        
-        if (this.monitoringInterval) {
-            clearInterval(this.monitoringInterval);
-        }
-        
-        this.monitoringInterval = setInterval(() => {
-            this.main.units.forEach(unit => {
-                this.monitorFuelUsage(unit);
-            });
-        }, 60000);
-    }
-
-    monitorFuelUsage(unit) {
-        const expectedConsumption = this.calculateExpectedFuel(unit.distance, unit.status);
-        const actualConsumption = unit.fuelUsed;
-        
-        if (actualConsumption > expectedConsumption * 1.2) {
-            this.detectFuelTheft(unit, expectedConsumption, actualConsumption);
-        }
-        
-        this.updateFuelEfficiency(unit);
-    }
-
-    calculateExpectedFuel(distance, status) {
-        let rate;
-        switch(status) {
-            case 'moving': rate = this.main.vehicleConfig.movingFuelConsumption; break;
-            case 'active': rate = this.main.vehicleConfig.baseFuelConsumption; break;
-            default: rate = this.main.vehicleConfig.baseFuelConsumption * 0.5;
-        }
-        return distance * rate;
-    }
-
-    detectFuelTheft(unit, expected, actual) {
-        const discrepancy = actual - expected;
-        const anomaly = {
-            type: 'FUEL_THEFT_SUSPICION',
-            unit: unit.name,
-            expected: expected,
-            actual: actual,
-            discrepancy: discrepancy,
-            percentage: ((actual - expected) / expected) * 100,
-            timestamp: new Date().toISOString()
-        };
-        
-        this.anomalies.set(unit.name, anomaly);
-        
-        this.main.logData(`Fuel anomaly detected: ${unit.name}`, 'analytics', anomaly);
-        this.main.notificationSystem.showFuelAnomalyAlert(anomaly);
-    }
-
-    updateFuelEfficiency(unit) {
-        if (!unit.fuelUsed || unit.fuelUsed <= 0) return;
-        
-        const expected = this.calculateExpectedFuel(unit.distance, unit.status);
-        const efficiency = (expected / unit.fuelUsed) * 100;
-        unit.analytics.fuelEfficiency = Math.min(100, efficiency);
-    }
-
-    updateFuelDisplay() {
-        const fuelAnomalies = document.getElementById('fuelAnomalies');
-        if (!fuelAnomalies) return;
-
-        if (this.anomalies.size === 0) {
-            fuelAnomalies.innerHTML = '<div class="alert alert-success">✅ Tidak ada anomali bahan bakar</div>';
-            return;
-        }
-
-        const recentAnomalies = Array.from(this.anomalies.values())
-            .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
-            .slice(0, 3);
-
-        fuelAnomalies.innerHTML = recentAnomalies.map(anomaly => `
-            <div class="alert alert-warning">
-                <strong>${anomaly.unit}</strong><br>
-                <small>Konsumsi: ${anomaly.actual.toFixed(1)}L (Expected: ${anomaly.expected.toFixed(1)}L)</small><br>
-                <small>Selisih: <span class="text-danger">+${anomaly.discrepancy.toFixed(1)}L</span></small>
-            </div>
-        `).join('');
-
-        // Update recommendations
-        const recommendations = document.getElementById('fuelRecommendations');
-        if (recommendations) {
-            recommendations.innerHTML = `
-                <div class="alert alert-info">
-                    <strong>💡 Rekomendasi:</strong><br>
-                    <small>• Monitor konsumsi bahan bakar real-time</small><br>
-                    <small>• Investigasi anomali yang terdeteksi</small><br>
-                    <small>• Optimalkan rute untuk efisiensi</small>
-                </div>
-            `;
-        }
-    }
-
-    cleanupUnit(unitName) {
-        this.fuelData.delete(unitName);
-        this.anomalies.delete(unitName);
-    }
-
-    clearAll() {
-        this.fuelData.clear();
-        this.anomalies.clear();
-    }
-
-    cleanup() {
-        if (this.monitoringInterval) {
-            clearInterval(this.monitoringInterval);
-            this.monitoringInterval = null;
-        }
-        this.clearAll();
-        console.log('🧹 Fuel Monitor cleaned up');
-    }
-}
-
-// ==== PERFORMANCE MANAGER ====
 class PerformanceManager {
     constructor(mainSystem) {
         this.main = mainSystem;
@@ -4102,23 +3793,6 @@ class NotificationSystem {
         this.addNotificationToPanel(notification);
     }
 
-    showFuelAnomalyAlert(anomaly) {
-        const notification = document.createElement('div');
-        notification.className = 'alert alert-danger notification-item';
-        notification.innerHTML = `
-            <div class="d-flex justify-content-between align-items-start">
-                <div>
-                    <strong>⛽ Anomali Bahan Bakar</strong>
-                    <div class="small">${anomaly.unit} - ${anomaly.percentage.toFixed(1)}% di atas normal</div>
-                    <div class="small text-muted">Selisih: ${anomaly.discrepancy.toFixed(2)}L</div>
-                </div>
-                <button type="button" class="btn-close btn-sm" onclick="this.parentElement.parentElement.remove()"></button>
-            </div>
-        `;
-
-        this.addNotificationToPanel(notification);
-    }
-
     addNotificationToPanel(notification) {
         const panel = document.getElementById('notificationPanel');
         if (panel) {
@@ -4155,7 +3829,7 @@ class ReportGenerator {
                 totalUnits: this.main.units.size,
                 activeUnits: this.main.activeUnits,
                 totalDistance: this.main.totalDistance,
-                totalFuel: this.main.totalFuelConsumption,
+                
                 averageScore: this.main.avgPerformanceScore,
                 totalViolations: this.main.totalViolations
             },
@@ -4169,7 +3843,6 @@ class ReportGenerator {
                 driver: unit.driver,
                 afdeling: unit.afdeling,
                 distance: unit.distance,
-                fuelUsed: unit.fuelUsed,
                 performanceScore: unit.analytics.performanceScore,
                 violations: unit.analytics.violations?.length || 0,
                 efficiency: unit.analytics.efficiency || 0
@@ -4190,9 +3863,7 @@ class ReportGenerator {
             recommendations.push('Perketat monitoring pelanggaran');
         }
         
-        if (this.main.totalFuelConsumption / this.main.totalDistance > 0.3) {
-            recommendations.push('Optimalkan konsumsi bahan bakar');
-        }
+        
 
         return recommendations;
     }
