@@ -894,7 +894,6 @@ setupEscapeKeyClose() {
                 isOnline: true,
                 sessionId: validatedData.sessionId,
                 analytics: {
-                    performanceScore: 75,
                     efficiency: 0,
                     violations: [],
                     dailyDistance: 0,
@@ -2357,7 +2356,7 @@ class AnalyticsEngine {
 
     initializeUnit(unit) {
         this.unitAnalytics.set(unit.name, {
-            performanceScore: 75,
+           
             lastUpdate: Date.now()
         });
     }
